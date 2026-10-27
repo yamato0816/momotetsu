@@ -8,6 +8,87 @@ const money = value => {
 };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const S = (tag, attrs = {}, txt) => { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); if (txt != null) el.textContent = String(txt); return el; };
+const MAP_WIDTH = 1200, MAP_HEIGHT = 850;
+const GRID_COLS = 26, GRID_ROWS = 18;
+const GRID_LEFT = 54, GRID_TOP = 58, GRID_DX = 42, GRID_DY = 39;
+const MAJOR_STATIONS = new Set(['札幌','函館','青森','盛岡','仙台','福島','宇都宮','大宮','東京','上野','品川','横浜','千葉','長野','新潟','金沢','名古屋','京都','大阪','神戸','岡山','広島','博多','熊本','鹿児島','松山','高松','那覇','羽田空港','新千歳空港','関西空港','福岡空港','豊洲キャンパス','大宮キャンパス']);
+const GRID_OVERRIDES = new Map(Object.entries({
+  '札幌':[23,2],'小樽':[22,2],'函館':[21,4],'青森':[21,5],'八戸':[22,6],'盛岡':[21,7],'仙台':[21,9],'福島':[20,10],
+  '秋田':[18,6],'山形':[18,8],'新潟':[16,9],'富山':[14,9],'金沢':[13,9],'長野':[16,11],'宇都宮':[19,11],
+  '大宮キャンパス':[18,12],'東大宮':[19,12],'大宮':[19,13],'上野':[18,14],'東京':[18,15],'豊洲キャンパス':[19,15],'新木場':[20,15],
+  '品川':[17,15],'羽田空港':[18,16],'千葉':[21,15],'船橋':[20,14],'川崎':[16,15],'横浜':[15,16],
+  '小田原':[14,16],'静岡':[13,15],'浜松':[11,15],'名古屋':[10,15],'岐阜':[10,13],'京都':[9,14],
+  '新大阪':[8,15],'大阪':[8,16],'神戸':[7,16],'姫路':[6,15],'岡山':[5,15],'広島':[3,15],'博多':[1,16],
+  '長崎':[0,16],'熊本':[1,17],'宮崎':[3,17],'鹿児島':[1,18],'高松':[6,17],'松山':[4,17],'高知':[6,18],
+  '関西空港':[8,17],'福岡空港':[2,16],'那覇':[0,20],'新千歳空港':[24,1]
+}));
+let layoutCacheKey = '';
+let layoutCache = null;
+function displayStations(stations) {
+  const key = stations.length + ':' + stations.map(st => st.name).join('|');
+  if (key === layoutCacheKey && layoutCache) return layoutCache;
+  const minX = Math.min(...stations.map(st => st.x));
+  const maxX = Math.max(...stations.map(st => st.x));
+  const minY = Math.min(...stations.map(st => st.y));
+  const maxY = Math.max(...stations.map(st => st.y));
+  const used = new Set();
+  const spiral = [[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1],[2,0],[-2,0],[0,2],[0,-2],[2,1],[-2,1],[2,-1],[-2,-1],[1,2],[-1,2],[1,-2],[-1,-2],[3,0],[-3,0],[0,3],[0,-3]];
+  const ordered = [...stations].sort((a,b)=>a.y-b.y || a.x-b.x || a.id-b.id);
+  const byId = new Map();
+  for (const st of ordered) {
+    let gx, gy;
+    if (GRID_OVERRIDES.has(st.name)) [gx, gy] = GRID_OVERRIDES.get(st.name);
+    else {
+      gx = Math.round(((st.x - minX) / Math.max(1, maxX - minX)) * (GRID_COLS - 2)) + 1;
+      gy = Math.round(((st.y - minY) / Math.max(1, maxY - minY)) * (GRID_ROWS - 2)) + 1;
+    }
+    let placed = null;
+    for (const [dx, dy] of spiral) {
+      const px = Math.max(0, Math.min(GRID_COLS, gx + dx));
+      const py = Math.max(0, Math.min(GRID_ROWS + 2, gy + dy));
+      const token = px + ':' + py;
+      if (!used.has(token)) { placed = [px, py]; used.add(token); break; }
+    }
+    if (!placed) placed = [gx, gy];
+    const [pgx, pgy] = placed;
+    const x = GRID_LEFT + pgx * GRID_DX;
+    const y = GRID_TOP + pgy * GRID_DY;
+    byId.set(st.id, { ...st, x, y, gx: pgx, gy: pgy });
+  }
+  const list = stations.map(st => byId.get(st.id));
+  layoutCacheKey = key;
+  layoutCache = { byId, list };
+  return layoutCache;
+}
+function stationView(stations, id) { return displayStations(stations).byId.get(id); }
+function railPath(a, b) {
+  if (!a || !b) return '';
+  if (a.x === b.x || a.y === b.y) return 'M' + a.x + ' ' + a.y + ' L' + b.x + ' ' + b.y;
+  const horizontalFirst = Math.abs(a.x - b.x) >= Math.abs(a.y - b.y);
+  if (horizontalFirst) {
+    const midX = Math.round((a.x + b.x) / 2);
+    return 'M' + a.x + ' ' + a.y + ' L' + midX + ' ' + a.y + ' L' + midX + ' ' + b.y + ' L' + b.x + ' ' + b.y;
+  }
+  const midY = Math.round((a.y + b.y) / 2);
+  return 'M' + a.x + ' ' + a.y + ' L' + a.x + ' ' + midY + ' L' + b.x + ' ' + midY + ' L' + b.x + ' ' + b.y;
+}
+function showStationLabel(st, context = {}) {
+  return context.reachable || context.isGoal || context.isPlayer || context.isSelected || context.isCampus || context.isAirport || MAJOR_STATIONS.has(st.name);
+}
+function labelY(st, visible) {
+  const top = st.gy <= 4 || st.name.length >= 5 || visible;
+  return st.y + (top ? -26 : 28);
+}
+function islandPaths() {
+  return [
+    ['M 908 80 L 1005 56 L 1082 78 L 1128 126 L 1098 172 L 1047 194 L 968 188 L 904 146 Z', '#cfe5ba'],
+    ['M 186 641 L 250 618 L 356 592 L 451 557 L 555 516 L 662 468 L 732 407 L 803 366 L 882 292 L 940 224 L 1012 196 L 1050 228 L 1022 274 L 972 306 L 952 357 L 913 392 L 876 454 L 819 489 L 748 520 L 676 551 L 602 584 L 528 621 L 436 663 L 354 693 L 272 705 L 216 692 L 176 666 Z', '#dbecc5'],
+    ['M 344 727 L 389 709 L 452 700 L 503 709 L 537 733 L 515 753 L 455 762 L 390 757 L 348 744 Z', '#d7e8c0'],
+    ['M 84 632 L 139 612 L 190 620 L 208 648 L 184 683 L 139 710 L 87 712 L 56 692 L 58 654 Z', '#d7e8c0'],
+    ['M 42 805 L 56 797 L 69 805 L 62 820 L 48 819 Z', '#d7e8c0']
+  ];
+}
+
 const face = n => ['⚀','⚁','⚂','⚃','⚄','⚅'][Math.max(0,Math.min(5,n - 1))];
 let state = null, room = null, socket = null, token = null, playerId = null;
 let reconnectTimer, reconnectCount = 0, intentionalClose = false, selectedStation = null, toastTimer;
@@ -147,7 +228,7 @@ $('mapOverview').addEventListener('click', () => { overview=!overview;camera=nul
 function focusMap() {
   if(!state)return;
   const me=state.players.find(p=>p.id===playerId) ?? state.players[state.turnIndex];
-  const st=state.stations[me?.pos];if(!st)return;
+  const st=stationView(state.stations, me?.pos);if(!st)return;
   camera={x:st.x,y:st.y};
   updateCamera(true);
 }
@@ -155,14 +236,14 @@ function updateCamera(immediate=false) {
   if(!state)return;
   const svg=$('railMap');
   const me=state.players.find(p=>p.id===playerId) ?? state.players[state.turnIndex];
-  const st=state.stations[me?.pos];if(!st)return;
-  if(overview){svg.setAttribute('viewBox','0 0 1200 850');return;}
+  const st=stationView(state.stations, me?.pos);if(!st)return;
+  if(overview){svg.setAttribute('viewBox', '0 0 ' + MAP_WIDTH + ' ' + MAP_HEIGHT);return;}
   const box=svg.getBoundingClientRect();
-  const ratio=Math.max(.7,box.width/Math.max(1,box.height));
-  const h=420/zoom, w=h*ratio;
-  const x=Math.max(0,Math.min(1200-w,(camera?.x??st.x)-w/2));
-  const y=Math.max(0,Math.min(850-h,(camera?.y??st.y)-h/2));
-  svg.setAttribute('viewBox',`${x} ${y} ${w} ${h}`);
+  const ratio=Math.max(.72,box.width/Math.max(1,box.height));
+  const h=Math.max(260, 430/zoom), w=h*ratio;
+  const x=Math.max(0,Math.min(MAP_WIDTH-w,(camera?.x??st.x)-w/2));
+  const y=Math.max(0,Math.min(MAP_HEIGHT-h,(camera?.y??st.y)-h/2));
+  svg.setAttribute('viewBox', x + ' ' + y + ' ' + w + ' ' + h);
 }
 window.addEventListener('resize',()=>updateCamera(true));
 function render() {
@@ -291,109 +372,104 @@ function showMoment(a, s) {
 }
 function renderMap(s, me, active) {
   const svg = $('railMap'); svg.replaceChildren();
+  const { byId } = displayStations(s.stations);
   const defs = S('defs');
   const sea = S('linearGradient', { id:'seaTint', x1:'0',y1:'0',x2:'1',y2:'1' });
-  sea.append(S('stop',{offset:'0%','stop-color':'#cceaf3'}),S('stop',{offset:'100%','stop-color':'#8dc7df'}));
+  sea.append(S('stop',{offset:'0%','stop-color':'#d4eef7'}),S('stop',{offset:'100%','stop-color':'#9bd4e8'}));
   const land = S('linearGradient', { id:'landTint', x1:'0',y1:'0',x2:'1',y2:'1' });
-  land.append(S('stop',{offset:'0%','stop-color':'#ebf4dd'}),S('stop',{offset:'100%','stop-color':'#bcd99e'}));
-  defs.append(sea,land); svg.append(defs);
-  svg.append(S('rect',{x:0,y:0,width:1200,height:850,fill:'url(#seaTint)'}));
-  const grid = S('g',{opacity:'.16'});
-  for(let x=0;x<=1200;x+=50)grid.append(S('path',{d:`M${x} 0V850`,stroke:'#fff','stroke-width':1}));
-  for(let y=0;y<=850;y+=50)grid.append(S('path',{d:`M0 ${y}H1200`,stroke:'#fff','stroke-width':1}));
+  land.append(S('stop',{offset:'0%','stop-color':'#eef7dd'}),S('stop',{offset:'100%','stop-color':'#bfdca0'}));
+  defs.append(sea, land); svg.append(defs);
+  svg.append(S('rect',{x:0,y:0,width:MAP_WIDTH,height:MAP_HEIGHT,fill:'url(#seaTint)'}));
+  const grid = S('g',{opacity:'.18'});
+  for(let x=GRID_LEFT-24;x<=MAP_WIDTH-40;x+=GRID_DX) grid.append(S('path',{d:'M'+x+' 0V'+MAP_HEIGHT,stroke:'#fff','stroke-width':1}));
+  for(let y=GRID_TOP-20;y<=MAP_HEIGHT-30;y+=GRID_DY) grid.append(S('path',{d:'M0 '+y+'H'+MAP_WIDTH,stroke:'#fff','stroke-width':1}));
   svg.append(grid);
-  // Decorative simplified land contours: original schematic, not a geographic survey map.
-  const islands = [
-    'M 76,814 L 33,776 L 30,695 L 75,642 L 149,630 L 209,659 L 224,719 L 197,820 Z',
-    'M 155,609 L 226,577 L 327,599 L 416,623 L 481,643 L 523,605 L 570,612 L 635,621 L 681,646 L 738,622 L 785,639 L 836,669 L 915,649 L 954,608 L 958,561 L 941,523 L 956,449 L 938,414 L 944,369 L 914,343 L 931,274 L 897,268 L 854,283 L 815,324 L 813,392 L 761,433 L 728,479 L 651,480 L 611,505 L 568,559 L 494,572 L 419,584 L 338,576 L 252,576 L 182,589 Z',
-    'M 270,798 L 257,758 L 295,724 L 379,712 L 426,748 L 409,811 L 319,824 Z',
-    'M 979,216 L 978,181 L 1019,147 L 1011,92 L 1051,53 L 1115,80 L 1160,108 L 1139,162 L 1094,199 L 1040,217 Z',
-  ];
-  for(const d of islands)svg.append(S('path',{d,fill:'url(#landTint)',stroke:'#9aba86','stroke-width':3,'stroke-linejoin':'round',opacity:'.84'}));
-  for (const [x,y,r] of [[1090,250,17],[704,572,17],[536,536,20],[842,349,17],[159,769,13],[469,746,15]]) {
-    svg.append(S('circle',{cx:x,cy:y,r,fill:'#fff',opacity:'.16'}));
-    svg.append(S('text',{x,y:y+5,'text-anchor':'middle',class:'map-decoration'},'✿'));
-  }
-  for (const [x,y,name] of [[1025,273,'北海道'],[854,345,'東北'],[966,715,'関東'],[690,578,'中部'],[473,586,'近畿'],[242,562,'中国'],[320,830,'四国'],[75,605,'九州']])
-    svg.append(S('text',{x,y,class:'map-area-name','text-anchor':'middle'},name));
-  // Rails: shadow, ties, and animated main line, each edge rendered once.
+  const landLayer = S('g', { opacity: '.96' });
+  for (const [d, fill] of islandPaths()) landLayer.append(S('path', { d, fill:'url(#landTint)', stroke:'#9fbe87', 'stroke-width':4, 'stroke-linejoin':'round' }));
+  svg.append(landLayer);
+  for (const [x, y, name] of [[1012,120,'北海道'],[920,352,'東北'],[870,650,'関東'],[648,548,'中部'],[450,646,'近畿'],[230,648,'中国'],[438,742,'四国'],[102,656,'九州'],[60,812,'沖縄']]) svg.append(S('text',{x,y,class:'map-area-name','text-anchor':'middle'},name));
+
   const rails = S('g',{class:'rail-layer'});
-  for (const {a,b,mode} of s.edges) {
-    const start=s.stations[a],end=s.stations[b];
-    const d=`M${start.x} ${start.y} L${end.x} ${end.y}`;
-    if(mode==='rail'){
+  for (const edge of s.edges) {
+    const a = byId.get(edge.a), b = byId.get(edge.b);
+    const d = railPath(a, b);
+    if (edge.mode === 'rail') {
       rails.append(S('path',{d,class:'rail-shadow'}));
       rails.append(S('path',{d,class:'rail-base'}));
       rails.append(S('path',{d,class:'rail-ties'}));
-    } else rails.append(S('path',{d,class:`transport-line ${mode}`}));
+    } else {
+      rails.append(S('path',{d, class:'transport-line ' + edge.mode}));
+    }
   }
   svg.append(rails);
-  if (s.status==='playing' && s.suggestedRoute?.length>1) {
-    const pts=s.suggestedRoute.map(i=>`${s.stations[i].x},${s.stations[i].y}`).join(' ');
+
+  if (s.status === 'playing' && s.suggestedRoute?.length > 1) {
+    const pts = s.suggestedRoute.map(i => { const st = byId.get(i); return st.x + ',' + st.y; }).join(' ');
     svg.append(S('polyline',{points:pts,class:'suggested-track'}));
   }
+
   const canMove = s.phase==='move' && active?.id===playerId;
-  const accessible = new Set(canMove ? s.neighbors[me.pos] : []);
+  const accessible = new Set(canMove && me ? s.neighbors[me.pos] : []);
+  const occupied = new Set(s.players.map(p => p.pos));
   for (const station of s.stations) {
-    const {x,y,id,name,type}=station;
-    const isGoal=id===s.destination, reachable=accessible.has(id);
+    const view = byId.get(station.id);
+    const {x,y,id,name,type} = view;
+    const isGoal=id===s.destination, reachable=accessible.has(id), isSelected=selectedStation===id, isPlayer=occupied.has(id);
     const owned=station.properties.filter(p=>s.owners[p.id]);
     const owners=[...new Set(owned.map(p=>s.owners[p.id]))];
     const isFullyOwned=station.properties.length>0 && owned.length===station.properties.length;
     const owner=owners.length===1 ? s.players.find(p=>p.id===owners[0]) : null;
-    const group=S('g',{class:`station-marker ${type} ${isGoal?'is-goal':''} ${reachable?'reachable':''}`,tabindex:0,role:'button','aria-label':`${name}${reachable?'、ここへ移動可能':''}`});
-    if(isGoal)group.append(S('circle',{cx:x,cy:y,r:18,class:'goal-pulse'}));
-    if(reachable)group.append(S('circle',{cx:x,cy:y,r:15,class:'reach-ring'}));
-    group.append(S('circle',{cx:x,cy:y,r:11,fill:owner?.color || (type==='city'?'#3979c5':type==='event'?'#ef745c':type==='card'?'#ecb94a':'#9a6bd1'),class:'station-outer'}));
-    group.append(S('circle',{cx:x,cy:y,r:5,fill:'#fff',opacity:'.95'}));
-    group.append(S('text',{x,y:y+5,class:'station-symbol'},type==='city'?'¥':type==='event'?'!':type==='card'?'C':'★'));
-    const yOffset= id%2===0?-28:37;
-    const label=S('text',{x,y:y+yOffset,class:`station-label ${reachable?'can-go':''}`,'text-anchor':'middle'},name);
-    const focus=s.stations[me?.pos ?? active?.pos ?? 13];
-    if(isGoal || (canMove ? id===me?.pos : name.includes('キャンパス') || (focus && Math.hypot(x-focus.x,y-focus.y)<95)))group.append(label);
-    if(isGoal)group.append(S('text',{x,y:y-43,class:'goal-flag','text-anchor':'middle'},'🚩'));
-    if(name.includes('キャンパス'))group.append(S('text',{x:x+24,y:y-15,class:'campus-marker'},'🎓'));
-    if(isFullyOwned && owner)group.append(S('text',{x:x+18,y:y-11,class:'owner-flag','text-anchor':'middle'},'★'));
-    group.addEventListener('click',()=>selectStation(s,id));
-    group.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); selectStation(s,id);} });
+    const isAirport = type==='airport';
+    const isCampus = /キャンパス/.test(name);
+    const showLabel = showStationLabel(view, {reachable,isGoal,isSelected,isPlayer,isAirport,isCampus});
+    const markerType = type === 'airport' ? 'shop' : type;
+    const group=S('g',{class:'station-marker '+ markerType + (isGoal?' is-goal':'') + (reachable?' reachable':''),tabindex:0,role:'button','aria-label':name + (reachable?'、ここへ移動可能':'')});
+    if(isGoal)group.append(S('circle',{cx:x,cy:y,r:22,class:'goal-pulse'}));
+    if(reachable)group.append(S('circle',{cx:x,cy:y,r:21,class:'reach-ring'}));
+    const fill = owner?.color || (type==='city' ? '#3e83cf' : type==='event' ? '#ef745c' : type==='card' ? '#f3c663' : isAirport ? '#7b75e6' : '#9d7ce1');
+    group.append(S('circle',{cx:x,cy:y,r:13,fill, class:'station-outer'}));
+    group.append(S('circle',{cx:x,cy:y,r:6.4,fill:'#fff',opacity:'.97'}));
+    const symbol = isAirport ? '✈' : isCampus ? '🎓' : type==='city' ? '¥' : type==='event' ? '!' : type==='card' ? 'C' : '★';
+    group.append(S('text',{x,y:y+4,class:'station-symbol'},symbol));
+    if(showLabel) group.append(S('text',{x,y:labelY(view, reachable||isGoal),class:'station-label ' + (reachable?'can-go':''),'text-anchor':'middle'},name));
+    if(isGoal)group.append(S('text',{x,y:y-32,class:'goal-flag','text-anchor':'middle'},'🚩'));
+    if(isFullyOwned && owner)group.append(S('text',{x:x+15,y:y-8,class:'owner-flag','text-anchor':'middle'},'★'));
+    group.addEventListener('click',()=>{ if(reachable) send('move',{to:id}); else selectStation(s,id); });
+    group.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); if(reachable)send('move',{to:id}); else selectStation(s,id);} });
     svg.append(group);
   }
+
   s.players.forEach((p,i)=>{
-    const station=s.stations[p.pos];
+    const station=byId.get(p.pos);
     const others=s.players.slice(0,i).filter(o=>o.pos===p.pos).length;
-    const x=station.x+23+(others%2)*38,y=station.y-23-Math.floor(others/2)*37;
-    const group=S('g',{class:`token ${p.id===playerId?'me':''}`,transform:`translate(${x},${y})`});
-    group.append(S('rect',{x:-21,y:-20,width:42,height:39,rx:13,fill:p.color,class:'train-token'}));
+    const x=station.x+18+(others%2)*28,y=station.y-18-Math.floor(others/2)*30;
+    const group=S('g',{class:'token ' + (p.id===playerId?'me':''),transform:'translate(' + x + ',' + y + ')'});
+    group.append(S('rect',{x:-17,y:-16,width:34,height:31,rx:10,fill:p.color,class:'train-token'}));
     group.append(S('text',{x:0,y:4,'text-anchor':'middle',class:'train-symbol'},'🚂'));
-    group.append(S('text',{x:0,y:31,'text-anchor':'middle',class:'token-name'},p.name.slice(0,4)));
-    if(s.poorGodId===p.id)group.append(S('text',{x:24,y:-24,class:'poor-token'},'👻'));
+    group.append(S('text',{x:0,y:24,'text-anchor':'middle',class:'token-name'},p.name.slice(0,4)));
+    if(s.poorGodId===p.id) group.append(S('text',{x:23,y:-16,class:'poor-token'},'👻'));
     svg.append(group);
     const prev=previousPositions.get(p.id);
-    if(prev!=null && prev!==p.pos && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      const start=s.stations[prev];
-      if(start)group.animate([{transform:`translate(${start.x+23+(others%2)*38}px, ${start.y-23-Math.floor(others/2)*37}px) scale(.92)`},{transform:`translate(${x}px, ${y}px) scale(1.13)`,offset:.65},{transform:`translate(${x}px, ${y}px) scale(1)`}],{duration:550,easing:'cubic-bezier(.2,.85,.2,1)'});
-    }
+    const prevSt = prev != null ? byId.get(prev) : null;
+    if(prevSt && prev!==p.pos && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) group.animate([{transform:'translate('+(prevSt.x+18+(others%2)*28)+'px,'+(prevSt.y-18-Math.floor(others/2)*30)+'px) scale(.92)'},{transform:'translate('+x+'px,'+y+'px) scale(1.12)',offset:.65},{transform:'translate('+x+'px,'+y+'px) scale(1)'}],{duration:520,easing:'cubic-bezier(.2,.85,.2,1)'});
     previousPositions.set(p.id,p.pos);
   });
-  if(canMove && me){
-    const here=s.stations[me.pos];
+
+  if (canMove && me) {
+    const here = byId.get(me.pos);
     const recommended=s.suggestedRoute?.[1];
     const routeChoices=s.neighbors[me.pos].map(to=>{
-      const dst=s.stations[to];return {to,angle:Math.atan2(dst.y-here.y,dst.x-here.x)};
+      const dst=byId.get(to);return {to,angle:Math.atan2(dst.y-here.y,dst.x-here.x)};
     }).sort((a,b)=>a.angle-b.angle);
     routeChoices.forEach(({to,angle},i)=>{
-      const dest=s.stations[to];const edge=s.edges.find(e=>(e.a===me.pos&&e.b===to)||(e.b===me.pos&&e.a===to));
-      const dx=dest.x-here.x,dy=dest.y-here.y;
-      const len=Math.hypot(dx,dy)||1;
-      const dX=dx/len,dY=dy/len;
-      const visualAngle=routeChoices.length>=4?routeChoices[0].angle+(Math.PI*2*i/routeChoices.length):angle;
-      const px=here.x+Math.cos(visualAngle)*65,py=here.y+Math.sin(visualAngle)*65;
+      const dest=byId.get(to);const edge=s.edges.find(e=>(e.a===me.pos&&e.b===to)||(e.b===me.pos&&e.a===to));
+      const visualAngle=routeChoices.length>=4 ? routeChoices[0].angle+(Math.PI*2*i/routeChoices.length) : angle;
+      const px=here.x+Math.cos(visualAngle)*48,py=here.y+Math.sin(visualAngle)*48;
       const degrees=angle*180/Math.PI;
-      const g=S('g',{class:`direction-choice ${to===recommended?'recommended':''} ${edge.mode}`,role:'button',tabindex:'0', 'aria-label':`${dest.name}方向へ移動`});
-      g.append(S('circle',{cx:px,cy:py,r:25,class:'direction-hit'}));
-      const arrow=S('path',{d:`M-17 -14 H4 V-24 L29 0 L4 24 V14 H-17 Z`, transform:`translate(${px} ${py}) rotate(${degrees}) scale(.7)`,class:'direction-arrow'});
-      g.append(arrow);
-      g.append(S('text',{x:px,y:py-28,'text-anchor':'middle',class:'direction-label'},`${edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':''}${dest.name}`));
+      const g=S('g',{class:'direction-choice ' + (to===recommended?'recommended ':'') + edge.mode,role:'button',tabindex:'0', 'aria-label':dest.name+'方向へ移動'});
+      g.append(S('circle',{cx:px,cy:py,r:19,class:'direction-hit'}));
+      g.append(S('path',{d:'M-15 -12 H3 V-20 L24 0 L3 20 V12 H-15 Z', transform:'translate('+px+' '+py+') rotate('+degrees+') scale(.62)',class:'direction-arrow'}));
+      g.append(S('text',{x:px,y:py-22,'text-anchor':'middle',class:'direction-label'},(edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':'') + dest.name));
       g.addEventListener('click',()=>send('move',{to}));
       g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();send('move',{to});}});
       svg.append(g);
@@ -402,8 +478,8 @@ function renderMap(s, me, active) {
   renderMiniMap(s,me);
   updateCamera();
   if (selectedStation != null) selectStation(s,selectedStation);
-  const current=s.stations[active?.pos];
-  $('mapNotice').textContent = canMove ? `🚂 残り${s.pending.remaining}マス｜列車の周りの矢印をタップ！` : `📍 現在の手番：${active ? `${active.name}（${current.name}）` : '出発待ち'}　|　駅を押すと物件を確認できます`;
+  const current = active ? byId.get(active.pos) : null;
+  $('mapNotice').textContent = canMove ? '🚂 残り' + s.pending.remaining + 'マス｜列車の周りの矢印をタップ！' : '📍 現在の手番：' + (active ? active.name + '（' + current.name + '）' : '出発待ち') + '　|　駅を押すと物件を確認できます';
   $('mapNotice').classList.toggle('guiding',canMove);
 }
 function selectStation(s,index) {
@@ -416,10 +492,13 @@ if ($('roomCode').value && savedName) { ensureIdentity(); connect($('roomCode').
 
 function renderMiniMap(s,me){
   const minimap=$('miniMap');minimap.replaceChildren();
+  const { byId } = displayStations(s.stations);
+  minimap.append(S('rect',{x:0,y:0,width:MAP_WIDTH,height:MAP_HEIGHT,fill:'#ccecf0'}));
+  for (const [d, fill] of islandPaths()) minimap.append(S('path',{d,fill,stroke:'#94b57f','stroke-width':7,'stroke-linejoin':'round'}));
   for(const e of s.edges){
-    const a=s.stations[e.a],b=s.stations[e.b];
-    minimap.append(S('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:e.mode==='rail'?'#7db4b1':e.mode==='sea'?'#229bb6':'#ad81d3','stroke-width':e.mode==='rail'?3:2}));
+    const a=byId.get(e.a),b=byId.get(e.b);
+    minimap.append(S('path',{d:railPath(a,b),stroke:e.mode==='rail'?'#6fa29b':e.mode==='sea'?'#229bb6':'#ad81d3','stroke-width':e.mode==='rail'?8:5,fill:'none','stroke-linecap':'round','stroke-dasharray':e.mode==='rail'?'':e.mode==='sea'?'22 15':'14 18'}));
   }
-  const goal=s.stations[s.destination];if(goal)minimap.append(S('circle',{cx:goal.x,cy:goal.y,r:18,fill:'#ed7452',stroke:'white','stroke-width':5}));
-  if(me){const pos=s.stations[me.pos];minimap.append(S('circle',{cx:pos.x,cy:pos.y,r:20,fill:me.color,stroke:'#fff','stroke-width':7}));}
+  const goal=byId.get(s.destination);if(goal)minimap.append(S('circle',{cx:goal.x,cy:goal.y,r:18,fill:'#ed7452',stroke:'white','stroke-width':8}));
+  if(me){const pos=byId.get(me.pos);minimap.append(S('circle',{cx:pos.x,cy:pos.y,r:20,fill:me.color,stroke:'#fff','stroke-width':9}));}
 }
