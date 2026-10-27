@@ -11,7 +11,7 @@ const S = (tag, attrs = {}, txt) => { const el = document.createElementNS(NS, ta
 const face = n => ['⚀','⚁','⚂','⚃','⚄','⚅'][Math.max(0,Math.min(5,n - 1))];
 let state = null, room = null, socket = null, token = null, playerId = null;
 let reconnectTimer, reconnectCount = 0, intentionalClose = false, selectedStation = null, toastTimer;
-let sessionId = 0, leaving = false, zoom = 1, centeredRoom = null, momentTimer;
+let sessionId = 0, leaving = false, zoom = 1.65, centeredRoom = null, momentTimer;
 let overview = false, camera = null;
 let lastMomentSeq = null, previousPositions = new Map(), previousMoney = new Map();
 let selectedProperties = new Set(), purchaseKey = '';
@@ -191,7 +191,7 @@ function renderHud(s, active) {
     return `<div class="money-board ${p.id === active?.id && s.status === 'playing' ? 'is-turn' : ''}" style="--player:${p.color}">
       <div class="money-board-top"><span class="money-player-dot">🚂</span><strong>${esc(p.name)}</strong><small>${p.id === playerId ? 'あなた' : p.online ? '● 接続中' : '○ オフライン'}${s.poorGodId === p.id ? ' 👻 貧乏神' : ''}</small></div>
       <div class="money-label">持ち金</div><div class="money-number">${money(p.money)}</div>
-      <div class="money-meta"><span>総資産 <b>${money(p.worth)}</b></span><span>物件 <b>${p.propertyCount}件</b></span></div>
+      <div class="money-meta"><span>総資産 <b>${money(p.worth)}</b></span><span>物件 <b>${p.propertyCount}件</b></span><span>カード <b>${p.cards?.length ?? 0}枚</b></span></div>
       ${delta ? `<div class="money-pop ${delta > 0 ? 'positive' : 'negative'}">${delta > 0 ? '+' : '−'}${money(Math.abs(delta))}</div>` : ''}
     </div>`;
   }).join('');
@@ -342,14 +342,15 @@ function renderMap(s, me, active) {
     const isFullyOwned=station.properties.length>0 && owned.length===station.properties.length;
     const owner=owners.length===1 ? s.players.find(p=>p.id===owners[0]) : null;
     const group=S('g',{class:`station-marker ${type} ${isGoal?'is-goal':''} ${reachable?'reachable':''}`,tabindex:0,role:'button','aria-label':`${name}${reachable?'、ここへ移動可能':''}`});
-    if(isGoal)group.append(S('circle',{cx:x,cy:y,r:28,class:'goal-pulse'}));
-    if(reachable)group.append(S('circle',{cx:x,cy:y,r:27,class:'reach-ring'}));
-    group.append(S('circle',{cx:x,cy:y,r:17,fill:owner?.color || (type==='city'?'#3979c5':type==='event'?'#ef745c':type==='card'?'#ecb94a':'#9a6bd1'),class:'station-outer'}));
-    group.append(S('circle',{cx:x,cy:y,r:9,fill:'#fff',opacity:'.95'}));
+    if(isGoal)group.append(S('circle',{cx:x,cy:y,r:18,class:'goal-pulse'}));
+    if(reachable)group.append(S('circle',{cx:x,cy:y,r:15,class:'reach-ring'}));
+    group.append(S('circle',{cx:x,cy:y,r:11,fill:owner?.color || (type==='city'?'#3979c5':type==='event'?'#ef745c':type==='card'?'#ecb94a':'#9a6bd1'),class:'station-outer'}));
+    group.append(S('circle',{cx:x,cy:y,r:5,fill:'#fff',opacity:'.95'}));
     group.append(S('text',{x,y:y+5,class:'station-symbol'},type==='city'?'¥':type==='event'?'!':type==='card'?'C':'★'));
     const yOffset= id%2===0?-28:37;
     const label=S('text',{x,y:y+yOffset,class:`station-label ${reachable?'can-go':''}`,'text-anchor':'middle'},name);
-    group.append(label);
+    const focus=s.stations[me?.pos ?? active?.pos ?? 13];
+    if(isGoal || (canMove ? id===me?.pos : name.includes('キャンパス') || (focus && Math.hypot(x-focus.x,y-focus.y)<95)))group.append(label);
     if(isGoal)group.append(S('text',{x,y:y-43,class:'goal-flag','text-anchor':'middle'},'🚩'));
     if(name.includes('キャンパス'))group.append(S('text',{x:x+24,y:y-15,class:'campus-marker'},'🎓'));
     if(isFullyOwned && owner)group.append(S('text',{x:x+18,y:y-11,class:'owner-flag','text-anchor':'middle'},'★'));
@@ -377,19 +378,22 @@ function renderMap(s, me, active) {
   if(canMove && me){
     const here=s.stations[me.pos];
     const recommended=s.suggestedRoute?.[1];
-    s.neighbors[me.pos].forEach((to,i)=>{
+    const routeChoices=s.neighbors[me.pos].map(to=>{
+      const dst=s.stations[to];return {to,angle:Math.atan2(dst.y-here.y,dst.x-here.x)};
+    }).sort((a,b)=>a.angle-b.angle);
+    routeChoices.forEach(({to,angle},i)=>{
       const dest=s.stations[to];const edge=s.edges.find(e=>(e.a===me.pos&&e.b===to)||(e.b===me.pos&&e.a===to));
       const dx=dest.x-here.x,dy=dest.y-here.y;
       const len=Math.hypot(dx,dy)||1;
       const dX=dx/len,dY=dy/len;
-      const px=here.x+dX*63,py=here.y+dY*63;
-      const angle=Math.atan2(dy,dx)*180/Math.PI;
+      const visualAngle=routeChoices.length>=4?routeChoices[0].angle+(Math.PI*2*i/routeChoices.length):angle;
+      const px=here.x+Math.cos(visualAngle)*65,py=here.y+Math.sin(visualAngle)*65;
+      const degrees=angle*180/Math.PI;
       const g=S('g',{class:`direction-choice ${to===recommended?'recommended':''} ${edge.mode}`,role:'button',tabindex:'0', 'aria-label':`${dest.name}方向へ移動`});
-      g.append(S('circle',{cx:px,cy:py,r:30,class:'direction-hit'}));
-      g.append(S('g',{transform:`translate(${px} ${py}) rotate(${angle})`,'pointer-events':'none'}));
-      const arrow=S('path',{d:`M-17 -14 H4 V-24 L29 0 L4 24 V14 H-17 Z`, transform:`translate(${px} ${py}) rotate(${angle})`,class:'direction-arrow'});
+      g.append(S('circle',{cx:px,cy:py,r:25,class:'direction-hit'}));
+      const arrow=S('path',{d:`M-17 -14 H4 V-24 L29 0 L4 24 V14 H-17 Z`, transform:`translate(${px} ${py}) rotate(${degrees}) scale(.7)`,class:'direction-arrow'});
       g.append(arrow);
-      g.append(S('text',{x:px,y:py-32,'text-anchor':'middle',class:'direction-label'},`${edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':''}${dest.name}`));
+      g.append(S('text',{x:px,y:py-28,'text-anchor':'middle',class:'direction-label'},`${edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':''}${dest.name}`));
       g.addEventListener('click',()=>send('move',{to}));
       g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();send('move',{to});}});
       svg.append(g);
@@ -399,7 +403,7 @@ function renderMap(s, me, active) {
   updateCamera();
   if (selectedStation != null) selectStation(s,selectedStation);
   const current=s.stations[active?.pos];
-  $('mapNotice').textContent = canMove ? `🚂 残り${s.pending.remaining}マス｜黄色い駅を選んで進もう！` : `📍 現在の手番：${active ? `${active.name}（${current.name}）` : '出発待ち'}　|　駅を押すと物件を確認できます`;
+  $('mapNotice').textContent = canMove ? `🚂 残り${s.pending.remaining}マス｜列車の周りの矢印をタップ！` : `📍 現在の手番：${active ? `${active.name}（${current.name}）` : '出発待ち'}　|　駅を押すと物件を確認できます`;
   $('mapNotice').classList.toggle('guiding',canMove);
 }
 function selectStation(s,index) {

@@ -168,3 +168,9 @@
 .map-notice.guiding{font-size:14px}
 @media(max-width:750px){.map-canvas{height:min(74vh,550px);min-height:375px}.minimap-frame{width:104px;top:8px;right:8px}.minimap-frame small{font-size:8px}.direction-label{font-size:16px}.map-bottom .legend{gap:7px}.map-bottom{flex-direction:column}.map-notice.guiding{font-size:11px}.card-inventory{grid-template-columns:1fr 1fr}}
 @media(prefers-reduced-motion:reduce){.poor-token,.direction-choice.recommended .direction-hit{animation:none}}
+.station-symbol{font-size:12px}
+.station-label{font-size:13px;stroke-width:3.8}
+.station-label.can-go{font-size:14px}
+.station-marker .reach-ring{animation:none;opacity:.6}
+.direction-label{font-size:13px;stroke-width:4}
+@media(max-width:750px){.direction-label{font-size:14px}}
