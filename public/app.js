@@ -80,19 +80,21 @@ function labelY(st, visible) {
   return st.y + (top ? -26 : 28);
 }
 function islandPaths() {
+  // Quiet, stylized Japanese archipelago silhouette aligned to the game grid.
+  // It is a decorative backdrop, never used for navigation/route calculations.
   return [
-    ['M 908 80 L 1005 56 L 1082 78 L 1128 126 L 1098 172 L 1047 194 L 968 188 L 904 146 Z', '#cfe5ba'],
-    ['M 186 641 L 250 618 L 356 592 L 451 557 L 555 516 L 662 468 L 732 407 L 803 366 L 882 292 L 940 224 L 1012 196 L 1050 228 L 1022 274 L 972 306 L 952 357 L 913 392 L 876 454 L 819 489 L 748 520 L 676 551 L 602 584 L 528 621 L 436 663 L 354 693 L 272 705 L 216 692 L 176 666 Z', '#dbecc5'],
-    ['M 344 727 L 389 709 L 452 700 L 503 709 L 537 733 L 515 753 L 455 762 L 390 757 L 348 744 Z', '#d7e8c0'],
-    ['M 84 632 L 139 612 L 190 620 L 208 648 L 184 683 L 139 710 L 87 712 L 56 692 L 58 654 Z', '#d7e8c0'],
-    ['M 42 805 L 56 797 L 69 805 L 62 820 L 48 819 Z', '#d7e8c0']
+    ['M 918 67 C 964 39 1043 37 1099 66 L 1131 114 L 1100 157 L 1041 189 L 984 181 L 930 151 L 900 109 Z'],
+    ['M 184 628 C 259 598 368 589 460 568 C 588 527 662 473 730 415 C 806 350 842 253 916 205 C 956 185 985 204 976 243 C 949 297 939 356 938 425 C 941 497 946 559 952 637 C 948 698 920 736 861 740 C 775 739 721 712 650 728 L 534 755 L 415 756 L 300 751 L 212 727 L 172 687 Z'],
+    ['M 328 756 C 389 742 462 742 518 754 L 523 781 C 455 801 377 804 333 784 Z'],
+    ['M 62 647 C 94 616 160 611 197 641 L 207 676 L 175 718 L 145 752 L 112 791 L 76 781 L 58 739 L 48 697 Z'],
+    ['M 39 816 Q 58 803 70 820 Q 60 843 43 840 Z'],
   ];
 }
 
 const face = n => ['⚀','⚁','⚂','⚃','⚄','⚅'][Math.max(0,Math.min(5,n - 1))];
 let state = null, room = null, socket = null, token = null, playerId = null;
 let reconnectTimer, reconnectCount = 0, intentionalClose = false, selectedStation = null, toastTimer;
-let sessionId = 0, leaving = false, zoom = 1.65, centeredRoom = null, momentTimer;
+let sessionId = 0, leaving = false, zoom = 1.48, centeredRoom = null, momentTimer;
 let overview = false, camera = null;
 let lastMomentSeq = null, previousPositions = new Map(), previousMoney = new Map();
 let selectedProperties = new Set(), purchaseKey = '';
@@ -225,6 +227,65 @@ $('mapZoomIn').addEventListener('click', () => setZoom(zoom * 1.22));
 $('mapZoomOut').addEventListener('click', () => setZoom(zoom / 1.22));
 $('mapCenter').addEventListener('click', () => {overview=false;camera=null;$('mapOverview').classList.remove('is-on');focusMap();});
 $('mapOverview').addEventListener('click', () => { overview=!overview;camera=null;$('mapOverview').classList.toggle('is-on',overview);focusMap(); });
+// Labels are *viewport-aware*. Only a handful of important stations have names
+// at once, preventing the overlapping text and icons of the earlier layout.
+let stationLabelRecords = [];
+function updateMapLabels() {
+  const svg=$('railMap');
+  if (!state || !stationLabelRecords.length) return;
+  const view=(svg.getAttribute('viewBox') || '0 0 1200 850').split(/\s+/).map(Number);
+  const [left, top, w, h]=view;
+  const centerX=left+w/2, centerY=top+h/2;
+  const me=state.players.find(p=>p.id===playerId);
+  const active=state.players[state.turnIndex];
+  const width=svg.getBoundingClientRect().width || 900;
+  const maxLabels=overview ? 9 : Math.max(3,Math.min(8,Math.floor(width/140)));
+  const unitsPerPixel=w/Math.max(1,width);
+  const reserved=[];
+  const picked=stationLabelRecords.filter(r=>r.x>=left-12&&r.x<=left+w+12&&r.y>=top-12&&r.y<=top+h+12)
+    .map(r=>({ ...r,
+      priority: r.id===me?.pos?110:r.id===selectedStation?105:r.id===state.destination?100:r.id===active?.pos?95:r.name.includes('キャンパス')?70:MAJOR_STATIONS.has(r.name)?48:5,
+      distance:Math.hypot(r.x-centerX,r.y-centerY) }))
+    .sort((a,b)=>b.priority-a.priority || a.distance-b.distance);
+  for (const r of stationLabelRecords) r.node.style.display='none';
+  let count=0;
+  for(const r of picked){
+    if(count>=maxLabels)break;
+    if(overview && r.priority<48)continue;
+    if(!overview && r.priority<48 && count>=Math.max(2,maxLabels-2))continue;
+    const labelW=Math.max(37,(Array.from(r.name).length*12.5)+13);
+    const labelH=22;
+    const candidates=[
+      {x:r.x-labelW/2,y:r.y-31-labelH},
+      {x:r.x-labelW/2,y:r.y+25},
+      {x:r.x+20,y:r.y-labelH/2},
+      {x:r.x-labelW-20,y:r.y-labelH/2},
+    ];
+    let pos=null;
+    for(const box of candidates){
+      if(box.x<left+3||box.x+labelW>left+w-3||box.y<top+2||box.y+labelH>top+h-2)continue;
+      // Small fixed mini-map is in the upper right corner of the game window.
+      const boxScreenX=(box.x-left)/unitsPerPixel;
+      const boxScreenY=(box.y-top)/unitsPerPixel;
+      if(!overview && boxScreenX>width-185 && boxScreenY<160)continue;
+      if(reserved.some(other=>box.x<other.x+other.w+8&&box.x+labelW+8>other.x&&box.y<other.y+other.h+8&&box.y+labelH+8>other.y))continue;
+      pos=box;break;
+    }
+    if(!pos)continue;
+    reserved.push({x:pos.x,y:pos.y,w:labelW,h:labelH});
+    r.bg.setAttribute('x',pos.x);r.bg.setAttribute('y',pos.y);r.bg.setAttribute('width',labelW);r.bg.setAttribute('height',labelH);
+    r.txt.setAttribute('x',pos.x+labelW/2);r.txt.setAttribute('y',pos.y+15);
+    r.node.classList.toggle('key-location',r.priority>=95);
+    r.node.style.display='';
+    count++;
+  }
+}
+function updateMiniViewport(x,y,w,h){
+  const rect=document.getElementById('miniViewport');
+  if(!rect)return;
+  for(const [name,val] of Object.entries({x,y,width:w,height:h}))rect.setAttribute(name,val);
+  rect.style.display=overview?'none':'';
+}
 function focusMap() {
   if(!state)return;
   const me=state.players.find(p=>p.id===playerId) ?? state.players[state.turnIndex];
@@ -237,13 +298,16 @@ function updateCamera(immediate=false) {
   const svg=$('railMap');
   const me=state.players.find(p=>p.id===playerId) ?? state.players[state.turnIndex];
   const st=stationView(state.stations, me?.pos);if(!st)return;
-  if(overview){svg.setAttribute('viewBox', '0 0 ' + MAP_WIDTH + ' ' + MAP_HEIGHT);return;}
+  if(overview){svg.setAttribute('viewBox', '0 0 ' + MAP_WIDTH + ' ' + MAP_HEIGHT);svg.classList.add('map-overview'); updateMapLabels(); updateMiniViewport(0,0,MAP_WIDTH,MAP_HEIGHT); return;}
+  svg.classList.remove('map-overview');
   const box=svg.getBoundingClientRect();
   const ratio=Math.max(.72,box.width/Math.max(1,box.height));
-  const h=Math.max(260, 430/zoom), w=h*ratio;
+  const h=Math.max(310, 525/zoom), w=h*ratio;
   const x=Math.max(0,Math.min(MAP_WIDTH-w,(camera?.x??st.x)-w/2));
   const y=Math.max(0,Math.min(MAP_HEIGHT-h,(camera?.y??st.y)-h/2));
   svg.setAttribute('viewBox', x + ' ' + y + ' ' + w + ' ' + h);
+  updateMapLabels();
+  updateMiniViewport(x,y,w,h);
 }
 window.addEventListener('resize',()=>updateCamera(true));
 function render() {
@@ -380,14 +444,14 @@ function renderMap(s, me, active) {
   land.append(S('stop',{offset:'0%','stop-color':'#eef7dd'}),S('stop',{offset:'100%','stop-color':'#bfdca0'}));
   defs.append(sea, land); svg.append(defs);
   svg.append(S('rect',{x:0,y:0,width:MAP_WIDTH,height:MAP_HEIGHT,fill:'url(#seaTint)'}));
-  const grid = S('g',{opacity:'.18'});
+  const grid = S('g',{opacity:'.065'});
   for(let x=GRID_LEFT-24;x<=MAP_WIDTH-40;x+=GRID_DX) grid.append(S('path',{d:'M'+x+' 0V'+MAP_HEIGHT,stroke:'#fff','stroke-width':1}));
   for(let y=GRID_TOP-20;y<=MAP_HEIGHT-30;y+=GRID_DY) grid.append(S('path',{d:'M0 '+y+'H'+MAP_WIDTH,stroke:'#fff','stroke-width':1}));
   svg.append(grid);
-  const landLayer = S('g', { opacity: '.96' });
+  const landLayer = S('g', { opacity: '.78' });
   for (const [d, fill] of islandPaths()) landLayer.append(S('path', { d, fill:'url(#landTint)', stroke:'#9fbe87', 'stroke-width':4, 'stroke-linejoin':'round' }));
   svg.append(landLayer);
-  for (const [x, y, name] of [[1012,120,'北海道'],[920,352,'東北'],[870,650,'関東'],[648,548,'中部'],[450,646,'近畿'],[230,648,'中国'],[438,742,'四国'],[102,656,'九州'],[60,812,'沖縄']]) svg.append(S('text',{x,y,class:'map-area-name','text-anchor':'middle'},name));
+  // Map region lettering was removed: the location cards carry this information without covering routes.
 
   const rails = S('g',{class:'rail-layer'});
   for (const edge of s.edges) {
@@ -398,19 +462,18 @@ function renderMap(s, me, active) {
       rails.append(S('path',{d,class:'rail-base'}));
       rails.append(S('path',{d,class:'rail-ties'}));
     } else {
-      rails.append(S('path',{d, class:'transport-line ' + edge.mode}));
+      rails.append(S('path',{d, class:'transport-line long ' + edge.mode}));
     }
   }
   svg.append(rails);
 
-  if (s.status === 'playing' && s.suggestedRoute?.length > 1) {
-    const pts = s.suggestedRoute.map(i => { const st = byId.get(i); return st.x + ',' + st.y; }).join(' ');
-    svg.append(S('polyline',{points:pts,class:'suggested-track'}));
-  }
+  // Avoid covering the map with a long, brightly highlighted cross-country line.
+  // The recommended direction is shown by a single gold arrow when moving.
 
   const canMove = s.phase==='move' && active?.id===playerId;
   const accessible = new Set(canMove && me ? s.neighbors[me.pos] : []);
   const occupied = new Set(s.players.map(p => p.pos));
+  stationLabelRecords=[];
   for (const station of s.stations) {
     const view = byId.get(station.id);
     const {x,y,id,name,type} = view;
@@ -421,37 +484,46 @@ function renderMap(s, me, active) {
     const owner=owners.length===1 ? s.players.find(p=>p.id===owners[0]) : null;
     const isAirport = type==='airport';
     const isCampus = /キャンパス/.test(name);
-    const showLabel = showStationLabel(view, {reachable,isGoal,isSelected,isPlayer,isAirport,isCampus});
     const markerType = type === 'airport' ? 'shop' : type;
     const group=S('g',{class:'station-marker '+ markerType + (isGoal?' is-goal':'') + (reachable?' reachable':''),tabindex:0,role:'button','aria-label':name + (reachable?'、ここへ移動可能':'')});
-    if(isGoal)group.append(S('circle',{cx:x,cy:y,r:22,class:'goal-pulse'}));
-    if(reachable)group.append(S('circle',{cx:x,cy:y,r:21,class:'reach-ring'}));
-    const fill = owner?.color || (type==='city' ? '#3e83cf' : type==='event' ? '#ef745c' : type==='card' ? '#f3c663' : isAirport ? '#7b75e6' : '#9d7ce1');
-    group.append(S('circle',{cx:x,cy:y,r:13,fill, class:'station-outer'}));
-    group.append(S('circle',{cx:x,cy:y,r:6.4,fill:'#fff',opacity:'.97'}));
-    const symbol = isAirport ? '✈' : isCampus ? '🎓' : type==='city' ? '¥' : type==='event' ? '!' : type==='card' ? 'C' : '★';
-    group.append(S('text',{x,y:y+4,class:'station-symbol'},symbol));
-    if(showLabel) group.append(S('text',{x,y:labelY(view, reachable||isGoal),class:'station-label ' + (reachable?'can-go':''),'text-anchor':'middle'},name));
-    if(isGoal)group.append(S('text',{x,y:y-32,class:'goal-flag','text-anchor':'middle'},'🚩'));
-    if(isFullyOwned && owner)group.append(S('text',{x:x+15,y:y-8,class:'owner-flag','text-anchor':'middle'},'★'));
+    // Small square station tiles show route geometry even in dense Tokyo / Osaka.
+    const fill = owner?.color || (type==='city' ? '#3684d0' : type==='event' ? '#ea7764' : type==='card' ? '#e9b64e' : isAirport ? '#766ace' : '#8c71cb');
+    if(isGoal) group.append(S('rect',{x:x-13,y:y-13,width:26,height:26,rx:6,class:'goal-pulse'}));
+    if(reachable)group.append(S('rect',{x:x-13,y:y-13,width:26,height:26,rx:6,class:'reach-tile'}));
+    group.append(S('rect',{x:x-8,y:y-8,width:16,height:16,rx:3,fill,class:'station-tile'}));
+    // Only special squares carry characters. Standard property stations use a clean blue tile.
+    // Color identifies station type. Repeated glyphs on every tile caused visual noise.
+    if(isAirport)group.append(S('text',{x,y:y+3.5,class:'tile-symbol'},'✈'));
+    group.append(S('title',{},name + '（' + (type==='city'?'物件':type==='event'?'イベント':type==='card'?'カード':type==='airport'?'空港':'ショップ') + '）'));
+    if(isFullyOwned && owner)group.append(S('circle',{cx:x+10,cy:y-10,r:3,fill:owner.color,stroke:'#fff','stroke-width':1}));
+    const tag=S('g',{class:'station-tag'});
+    const bg=S('rect',{x:0,y:0,width:1,height:22,rx:5,class:'station-tag-bg'});
+    const text=S('text',{x:0,y:0,'text-anchor':'middle',class:'station-tag-name'},name);
+    tag.append(bg,text);
+    stationLabelRecords.push({node:tag,bg,txt:text,id,x,y,name});
     group.addEventListener('click',()=>{ if(reachable) send('move',{to:id}); else selectStation(s,id); });
     group.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); if(reachable)send('move',{to:id}); else selectStation(s,id);} });
     svg.append(group);
   }
 
+  // Draw labels above rails/tiles, but limit displayed labels dynamically.
+  const labelsLayer=S('g',{class:'label-layer'});
+  for(const rec of stationLabelRecords) labelsLayer.append(rec.node);
+  svg.append(labelsLayer);
+
   s.players.forEach((p,i)=>{
     const station=byId.get(p.pos);
     const others=s.players.slice(0,i).filter(o=>o.pos===p.pos).length;
-    const x=station.x+18+(others%2)*28,y=station.y-18-Math.floor(others/2)*30;
+    const x=station.x+10+(others%2)*27,y=station.y-11-Math.floor(others/2)*20;
     const group=S('g',{class:'token ' + (p.id===playerId?'me':''),transform:'translate(' + x + ',' + y + ')'});
-    group.append(S('rect',{x:-17,y:-16,width:34,height:31,rx:10,fill:p.color,class:'train-token'}));
-    group.append(S('text',{x:0,y:4,'text-anchor':'middle',class:'train-symbol'},'🚂'));
-    group.append(S('text',{x:0,y:24,'text-anchor':'middle',class:'token-name'},p.name.slice(0,4)));
-    if(s.poorGodId===p.id) group.append(S('text',{x:23,y:-16,class:'poor-token'},'👻'));
+    group.append(S('rect',{x:-12,y:-13,width:24,height:24,rx:7,fill:p.color,class:'train-token'}));
+    group.append(S('text',{x:0,y:3,'text-anchor':'middle',class:'train-symbol'},'🚂'));
+    group.append(S('title',{},p.name + ' の列車')); 
+    if(s.poorGodId===p.id) group.append(S('text',{x:13,y:-12,class:'poor-token'},'👻'));
     svg.append(group);
     const prev=previousPositions.get(p.id);
     const prevSt = prev != null ? byId.get(prev) : null;
-    if(prevSt && prev!==p.pos && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) group.animate([{transform:'translate('+(prevSt.x+18+(others%2)*28)+'px,'+(prevSt.y-18-Math.floor(others/2)*30)+'px) scale(.92)'},{transform:'translate('+x+'px,'+y+'px) scale(1.12)',offset:.65},{transform:'translate('+x+'px,'+y+'px) scale(1)'}],{duration:520,easing:'cubic-bezier(.2,.85,.2,1)'});
+    if(prevSt && prev!==p.pos && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) group.animate([{transform:'translate('+(prevSt.x+10+(others%2)*27)+'px,'+(prevSt.y-11-Math.floor(others/2)*20)+'px) scale(.92)'},{transform:'translate('+x+'px,'+y+'px) scale(1.12)',offset:.65},{transform:'translate('+x+'px,'+y+'px) scale(1)'}],{duration:520,easing:'cubic-bezier(.2,.85,.2,1)'});
     previousPositions.set(p.id,p.pos);
   });
 
@@ -464,12 +536,12 @@ function renderMap(s, me, active) {
     routeChoices.forEach(({to,angle},i)=>{
       const dest=byId.get(to);const edge=s.edges.find(e=>(e.a===me.pos&&e.b===to)||(e.b===me.pos&&e.a===to));
       const visualAngle=routeChoices.length>=4 ? routeChoices[0].angle+(Math.PI*2*i/routeChoices.length) : angle;
-      const px=here.x+Math.cos(visualAngle)*48,py=here.y+Math.sin(visualAngle)*48;
+      const px=here.x+Math.cos(visualAngle)*36,py=here.y+Math.sin(visualAngle)*36;
       const degrees=angle*180/Math.PI;
       const g=S('g',{class:'direction-choice ' + (to===recommended?'recommended ':'') + edge.mode,role:'button',tabindex:'0', 'aria-label':dest.name+'方向へ移動'});
-      g.append(S('circle',{cx:px,cy:py,r:19,class:'direction-hit'}));
-      g.append(S('path',{d:'M-15 -12 H3 V-20 L24 0 L3 20 V12 H-15 Z', transform:'translate('+px+' '+py+') rotate('+degrees+') scale(.62)',class:'direction-arrow'}));
-      g.append(S('text',{x:px,y:py-22,'text-anchor':'middle',class:'direction-label'},(edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':'') + dest.name));
+      g.append(S('circle',{cx:px,cy:py,r:17,class:'direction-hit'}));
+      g.append(S('path',{d:'M-15 -12 H3 V-20 L24 0 L3 20 V12 H-15 Z', transform:'translate('+px+' '+py+') rotate('+degrees+') scale(.52)',class:'direction-arrow'}));
+      g.append(S('text',{x:px,y:py-18,'text-anchor':'middle',class:'direction-label'},(edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':'') + dest.name));
       g.addEventListener('click',()=>send('move',{to}));
       g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();send('move',{to});}});
       svg.append(g);
@@ -492,13 +564,12 @@ if ($('roomCode').value && savedName) { ensureIdentity(); connect($('roomCode').
 
 function renderMiniMap(s,me){
   const minimap=$('miniMap');minimap.replaceChildren();
-  const { byId } = displayStations(s.stations);
-  minimap.append(S('rect',{x:0,y:0,width:MAP_WIDTH,height:MAP_HEIGHT,fill:'#ccecf0'}));
-  for (const [d, fill] of islandPaths()) minimap.append(S('path',{d,fill,stroke:'#94b57f','stroke-width':7,'stroke-linejoin':'round'}));
-  for(const e of s.edges){
-    const a=byId.get(e.a),b=byId.get(e.b);
-    minimap.append(S('path',{d:railPath(a,b),stroke:e.mode==='rail'?'#6fa29b':e.mode==='sea'?'#229bb6':'#ad81d3','stroke-width':e.mode==='rail'?8:5,fill:'none','stroke-linecap':'round','stroke-dasharray':e.mode==='rail'?'':e.mode==='sea'?'22 15':'14 18'}));
-  }
-  const goal=byId.get(s.destination);if(goal)minimap.append(S('circle',{cx:goal.x,cy:goal.y,r:18,fill:'#ed7452',stroke:'white','stroke-width':8}));
-  if(me){const pos=byId.get(me.pos);minimap.append(S('circle',{cx:pos.x,cy:pos.y,r:20,fill:me.color,stroke:'#fff','stroke-width':9}));}
+  const {byId}=displayStations(s.stations);
+  minimap.append(S('rect',{x:0,y:0,width:MAP_WIDTH,height:MAP_HEIGHT,fill:'#d4edf4'}));
+  for(const [d] of islandPaths()) minimap.append(S('path',{d,fill:'#b9d9a9',stroke:'#88b79c','stroke-width':6}));
+  // This is a locator, not a second crowded railway map.
+  minimap.append(S('rect',{id:'miniViewport',x:0,y:0,width:360,height:270,rx:12,fill:'#fff','fill-opacity':'.12',stroke:'#40649b','stroke-width':12,'stroke-dasharray':'28 14'}));
+  const goal=byId.get(s.destination);
+  if(goal)minimap.append(S('circle',{cx:goal.x,cy:goal.y,r:25,fill:'#eb7250',stroke:'#fff','stroke-width':8}));
+  if(me){const loc=byId.get(me.pos);minimap.append(S('circle',{cx:loc.x,cy:loc.y,r:26,fill:me.color,stroke:'#fff','stroke-width':9}));}
 }
