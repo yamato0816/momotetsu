@@ -77,7 +77,7 @@ export class GameRoom extends DurableObject {
     return this.ctx.blockConcurrencyWhile(async () => {
       let game = await this.ctx.storage.get('game');
       if (!game) return json({ error: '部屋が見つかりません。' }, 404);
-      if (game.version !== 2) { game = upgradeGame(game); await this.ctx.storage.put('game', game); }
+      if (game.version !== 3) { game = upgradeGame(game); await this.ctx.storage.put('game', game); }
       let joined;
       try { joined = joinGame(game, input); } catch (e) { return json({ error: e.message }, 409); }
       if (joined.players.length !== game.players.length) await this.ctx.storage.put('game', joined);
@@ -99,7 +99,7 @@ export class GameRoom extends DurableObject {
     try {
       await this.ctx.blockConcurrencyWhile(async () => {
         let g = await this.ctx.storage.get('game');
-        if (g && g.version !== 2) { g = upgradeGame(g); await this.ctx.storage.put('game', g); }
+        if (g && g.version !== 3) { g = upgradeGame(g); await this.ctx.storage.put('game', g); }
         if (!g || !g.players.some(p => p.id === actorId)) throw Error('参加者ではありません。');
         if (action.type === 'emote') {
           const now = Date.now();

@@ -50,11 +50,11 @@
         <div class="map-top">
           <div class="round-badge"><span>📅</span> <strong id="roundBadge">ロビー</strong></div>
           <div class="destination"><span class="destination-caption">🚩 めざせ！</span><strong id="destinationName">-</strong><small>到着賞金 +1,100万円</small></div>
-          <div class="map-tools"><button id="mapZoomOut" class="map-tool" type="button" title="縮小" aria-label="地図を縮小">－</button><button id="mapZoomIn" class="map-tool" type="button" title="拡大" aria-label="地図を拡大">＋</button><button id="mapCenter" class="map-tool full" type="button">現在地</button></div>
+          <div class="map-tools"><button id="mapZoomOut" class="map-tool" type="button" title="縮小" aria-label="地図を縮小">－</button><button id="mapZoomIn" class="map-tool" type="button" title="拡大" aria-label="地図を拡大">＋</button><button id="mapCenter" class="map-tool full" type="button">📍 現在地</button><button id="mapOverview" class="map-tool full" type="button">🗾 全体マップ</button></div>
         </div>
-        <div class="map-scroll" id="mapScroll"><div class="map-canvas" id="mapCanvas"><svg id="railMap" viewBox="0 0 1200 850" role="img" aria-label="選んで移動できる日本の鉄道路線図"></svg></div></div>
+        <div class="map-scroll" id="mapScroll"><div class="map-canvas" id="mapCanvas"><svg id="railMap" viewBox="0 0 1200 850" role="img" aria-label="方向矢印を選んで移動できる日本の路線図"></svg><div class="minimap-frame"><svg id="miniMap" viewBox="0 0 1200 850" aria-label="現在地と目的地を示すミニマップ"></svg><small>● 自分　● 目的地</small></div></div></div>
         <div id="mapNotice" class="map-notice">路線図上の駅を選んで詳細を確認できます</div>
-        <div class="map-bottom"><div class="legend"><span><i class="legend-dot city"></i>物件駅</span><span><i class="legend-dot event"></i>イベント駅</span><span><i class="legend-dot shop"></i>ショップ</span><span><i class="legend-dot reachable"></i>移動できる駅</span></div><div id="stationInfo" class="station-info">線路がつながる駅へ進めます</div></div>
+        <div class="map-bottom"><div class="legend"><span><i class="legend-dot city"></i>物件駅</span><span><i class="legend-dot event"></i>イベント駅</span><span><i class="legend-dot shop"></i>ショップ</span><span><i class="legend-dot reachable"></i>進行方向</span><span>🃏 カード駅</span><span>⛴ 海路 / ✈ 空路</span></div><div id="stationInfo" class="station-info">線路がつながる駅へ進めます</div></div>
       </section>
       <aside class="sidebar">
         <section class="turn-card" id="turnCard"><div class="action-head"><div class="section-kicker">🎮 コマンド</div><span id="turnIndicator" class="turn-indicator">TURN</span></div><div id="actionContent"></div></section>

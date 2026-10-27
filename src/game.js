@@ -1,10 +1,16 @@
-// Rail Trip v2 — server-authoritative, graph-based railway board game.
+// Rail Trip v3 — server-authoritative, graph-based railway board game.
 // Money is represented in units of 10,000 JPY (万円).
 export const MAX_PLAYERS = 4;
-export const SHOP_ITEMS = Object.freeze({
-  express: { name: '特急きっぷ', price: 220, icon: '🚄', description: '次のサイコロの出目に+2' },
-  shield: { name: 'おまもり', price: 180, icon: '🛡️', description: '損失イベントを1回防ぐ' },
+export const CARDS = Object.freeze({
+  express: { name:'特急カード', price:220, icon:'🚄', description:'次のサイコロの移動が+2マス' },
+  shinkansen: { name:'新幹線カード', price:450, icon:'🚅', description:'次のサイコロの移動が+4マス' },
+  local: { name:'ぴったりカード', price:250, icon:'🎯', description:'次のサイコロを1にする' },
+  grant: { name:'研究費カード', price:350, icon:'🔬', description:'SITの研究助成で400万円を獲得' },
+  guard: { name:'単位取得カード', price:160, icon:'🎓', description:'悪いイベントや貧乏神を1回防ぐ' },
+  warp: { name:'ぶっとびカード', price:400, icon:'✈️', description:'ランダムな物件駅へ瞬間移動してターンを終える' },
 });
+export const SHOP_ITEMS = CARDS;
+export const CARD_LIMIT = 8;
 
 const raw = [
   ['札幌',1080,116,'city','味噌ラーメン店:240:15,雪まつりホテル:980:8,乳製品工房:520:12'],
@@ -45,6 +51,75 @@ const raw = [
   ['高知',391,794,'city','かつお食堂:270:17,土佐市場:470:13'],
 ];
 
+// Existing 36 station IDs stay fixed; v2 saved properties and locations remain valid.
+const fillerRoutes = {
+ '札幌-函館':'小樽,倶知安,長万部,八雲',
+ '函館-青森':'新函館北斗,木古内,奥津軽いまべつ',
+ '青森-盛岡':'八戸,二戸',
+ '盛岡-仙台':'一ノ関,古川',
+ '仙台-福島':'白石',
+ '福島-宇都宮':'郡山,那須塩原',
+ '宇都宮-東京':'小山,東大宮,大宮,上野',
+ '東京-横浜':'品川,川崎',
+ '横浜-小田原':'戸塚,大船,平塚',
+ '小田原-静岡':'熱海,三島,沼津',
+ '静岡-浜松':'焼津,掛川',
+ '浜松-名古屋':'豊橋,岡崎',
+ '名古屋-京都':'米原,彦根,草津',
+ '京都-大阪':'高槻,新大阪',
+ '大阪-神戸':'尼崎,西宮,三ノ宮',
+ '神戸-姫路':'明石,加古川',
+ '姫路-岡山':'相生,備前',
+ '岡山-広島':'倉敷,福山,尾道,三原',
+ '広島-山口':'宮島口,岩国,徳山',
+ '山口-博多':'下関,小倉',
+ '博多-熊本':'久留米,大牟田',
+ '熊本-鹿児島':'八代,川内',
+ '青森-秋田':'弘前,大館',
+ '秋田-新潟':'酒田,鶴岡,村上',
+ '新潟-富山':'長岡,上越,糸魚川',
+ '富山-金沢':'高岡',
+ '金沢-京都':'福井,敦賀',
+ '長野-宇都宮':'軽井沢,高崎',
+ '長野-東京':'上田,熊谷',
+ '東京-千葉':'豊洲キャンパス,新木場,船橋',
+ '大阪-高松':'鳴門,徳島',
+ '岡山-高松':'児島,坂出',
+ '博多-長崎':'鳥栖,佐賀,武雄温泉',
+ '熊本-宮崎':'人吉,都城',
+ '山形-仙台':'天童',
+};
+const specialProperties = {
+ '豊洲キャンパス':'キャンパスカフェ:240:22,AI研究ラボ:760:17,ロボット開発拠点:960:14',
+ '大宮キャンパス':'学食:210:24,研究棟:820:15,学園祭屋台:340:21',
+ '東大宮':'スクールバス運行会社:300:20,学生向け食堂:260:21',
+ '新木場':'湾岸ロジスティクス:490:14,物流倉庫:320:16',
+ '上野':'公園カフェ:320:21,博物館ショップ:580:14',
+};
+const existingNames = new Set(raw.map(row=>row[0]));
+for (const [pair, list] of Object.entries(fillerRoutes)) {
+  const [from,to] = pair.split('-');
+  const a=raw.find(r=>r[0]===from), b=raw.find(r=>r[0]===to);
+  if (!a || !b) throw Error('Bad route ' + pair);
+  const names=list.split(',');
+  names.forEach((name,i)=>{
+    if (existingNames.has(name)) throw Error('Duplicate station '+name);
+    existingNames.add(name);
+    const t=(i+1)/(names.length+1);
+    const x=Math.round(a[1]+(b[1]-a[1])*t), y=Math.round(a[2]+(b[2]-a[2])*t);
+    const slot=raw.length;
+    const type = specialProperties[name] || name.includes('キャンパス') || i%4===0 ? 'city' : i%4===1 ? 'card' : i%4===2 ? 'event':'shop';
+    const props = specialProperties[name] || `${name}のご当地食堂:${170+(slot%5)*65}:${14+slot%8},${name}駅前商店:${340+(slot%7)*90}:${9+slot%7}`;
+    raw.push([name,x,y,type,type==='city'?props:'']);
+  });
+}
+// Additional real campus branch (outside the main East Omiya railway).
+raw.push(['大宮キャンパス',880,566,'city',specialProperties['大宮キャンパス']]);
+raw.push(['羽田空港',925,715,'airport']);
+raw.push(['新千歳空港',1111,155,'airport']);
+raw.push(['関西空港',476,752,'airport']);
+raw.push(['福岡空港',143,680,'airport']);
+raw.push(['那覇',44,830,'city','沖縄そば店:350:18,リゾートホテル:1200:10,伝統工芸館:450:16']);
 export const STATIONS = raw.map(([name, x, y, type, catalog], i) => ({
   id: i, name, x, y, type,
   properties: (catalog ?? '').split(',').filter(Boolean).map((item, j) => {
@@ -59,23 +134,44 @@ const railway = [
   '新潟-長野-宇都宮', '長野-東京', '長野-岐阜-名古屋', '金沢-岐阜', '富山-岐阜',
   '東京-千葉', '東京-静岡', '大阪-高松-松山-高知-高松', '岡山-高松', '広島-松山',
   '博多-長崎', '熊本-宮崎-鹿児島', '静岡-名古屋', '京都-神戸',
+  '東大宮-大宮キャンパス', '大宮キャンパス-大宮',
+  '東京-羽田空港','札幌-新千歳空港','大阪-関西空港','博多-福岡空港',
 ];
-const edgeSet = new Set();
-for (const chain of railway) {
-  const names = chain.split('-');
-  for (let i = 1; i < names.length; i++) {
-    const a = stationId.get(names[i - 1]); const b = stationId.get(names[i]);
-    if (a == null || b == null) throw Error(`Unknown station in route: ${chain}`);
-    edgeSet.add([a, b].sort((x, y) => x - y).join(':'));
+const edgeMap=new Map();
+function addEdge(left,right,mode='rail',fare=0){
+  const a=stationId.get(left),b=stationId.get(right);
+  if(a==null||b==null||a===b)throw Error('Unknown route '+left+'-'+right);
+  const key=[a,b].sort((x,y)=>x-y).join(':');
+  edgeMap.set(key,{a,b,mode,fare});
+}
+for(const line of railway){
+  const places=line.split('-');
+  for(let i=1;i<places.length;i++){
+    const a=places[i-1],b=places[i];
+    const mid=fillerRoutes[`${a}-${b}`]?.split(',') ?? fillerRoutes[`${b}-${a}`]?.split(',').reverse() ?? [];
+    const path=[a,...mid,b];
+    for(let j=1;j<path.length;j++)addEdge(path[j-1],path[j]);
   }
 }
-export const LINKS = [...edgeSet].map(key => key.split(':').map(Number));
-export const NEIGHBORS = STATIONS.map(s => LINKS.filter(([a, b]) => a === s.id || b === s.id).map(([a, b]) => a === s.id ? b : a));
+for(const line of ['函館-青森','神戸-高松','広島-松山','新潟-小樽','博多-長崎','鹿児島-那覇']){
+  const [a,b]=line.split('-');addEdge(a,b,'sea',80);
+}
+for(const line of ['羽田空港-新千歳空港','羽田空港-関西空港','羽田空港-福岡空港','福岡空港-新千歳空港','関西空港-福岡空港','羽田空港-那覇','福岡空港-那覇']){
+  const [a,b]=line.split('-'); if(stationId.has(a)&&stationId.has(b))addEdge(a,b,'air',240);
+}
+export const EDGES=[...edgeMap.values()];
+export const LINKS=EDGES.map(({a,b})=>[a,b]);
+export const NEIGHBORS=STATIONS.map(s=>EDGES.filter(e=>e.a===s.id||e.b===s.id).map(e=>e.a===s.id?e.b:e.a));
+export const edgeBetween=(a,b)=>EDGES.find(e=>(e.a===a&&e.b===b)||(e.a===b&&e.b===a));
 export const START = stationId.get('東京');
 const OLD_STATION_NAMES = ['東京','横浜','小田原','静岡','浜松','名古屋','岐阜','京都','大阪','神戸','姫路','岡山','広島','山口','博多','熊本','鹿児島','松山','高松','金沢','富山','新潟','仙台','盛岡','青森','函館','札幌','宇都宮'];
 
 const COLORS = ['#ed6758', '#4082eb', '#1daa83', '#9c6cdd'];
 const EVENTS = [
+  { text: '芝浦工大の学園祭が大成功！', money: 340 },
+  { text: 'ロボコンで開発したロボットが入賞！', money: 300 },
+  { text: '東大宮のスクールバスが増便！', money: 190 },
+  { text: '研究室のGPUが故障した…', money: -260 },
   { text: '商店街の福引に当選！', money: 280 },
   { text: '沿線グルメ祭が大盛況！', money: 180 },
   { text: '駅のポスターが話題に！', money: 350 },
@@ -114,26 +210,30 @@ export function nextGoal(from, rng = Math.random) {
   const distant = cities.filter(s => { const d = shortestPath(from, s.id).length - 1; return d >= 5 && d <= 13; });
   return choose(distant.length ? distant : cities, rng).id;
 }
-const initialPlayer = (p, i = 0) => ({ id: p.id, token: p.token, name: p.name, color: COLORS[i], pos: START, money: 2000, express: 0, shield: 0 });
+const initialPlayer = (p, i = 0) => ({ id:p.id,token:p.token,name:p.name,color:COLORS[i],pos:START,money:2000,cards:['local','guard'],shield:0,rollBonus:0,fixedDie:null });
 export function newGame({ id, token, name, rounds = 6 }, rng = Math.random) {
-  const g = { version: 2, status: 'lobby', hostId: id, players: [initialPlayer({ id, token, name })], owners: {}, rounds: [6,10].includes(rounds) ? rounds : 6, round: 1, turnIndex: 0, phase: 'roll', pending: null, destination: nextGoal(START, rng), lastRoll: null, lastAction: null, actionSeq: 0, logSeq: 0, logs: [], turnStartedAt: Date.now() };
+  const g = { version: 3, poorGodId:null, status: 'lobby', hostId: id, players: [initialPlayer({ id, token, name })], owners: {}, rounds: [6,10].includes(rounds) ? rounds : 6, round: 1, turnIndex: 0, phase: 'roll', pending: null, destination: nextGoal(START, rng), lastRoll: null, lastAction: null, actionSeq: 0, logSeq: 0, logs: [], turnStartedAt: Date.now() };
   log(g, `${name}さんが旅の部屋を作成しました！`, 'system');
   return g;
 }
 // Preserve old rooms after upgrading: map stations/ownership, safely reset unfinished decisions.
 export function upgradeGame(game) {
-  if (game.version === 2) return game;
+  if (game.version === 3) return game;
   const g = structuredClone(game);
-  g.version = 2; g.actionSeq = 0; g.lastAction = null; g.logSeq = g.logs.length;
-  g.players = g.players.map(p => ({ ...p, pos: stationId.get(OLD_STATION_NAMES[p.pos]) ?? START }));
-  g.destination = stationId.get(OLD_STATION_NAMES[g.destination]) ?? nextGoal(START);
-  const owners = {};
-  for (const [oldIndex, ownerId] of Object.entries(g.owners)) {
-    const station = STATIONS.find(s => s.name === OLD_STATION_NAMES[Number(oldIndex)]);
-    if (station?.properties[0]) owners[station.properties[0].id] = ownerId;
+  if (!g.version || g.version < 2) {
+    g.players = g.players.map(p => ({ ...p, pos: stationId.get(OLD_STATION_NAMES[p.pos]) ?? START }));
+    g.destination = stationId.get(OLD_STATION_NAMES[g.destination]) ?? nextGoal(START);
+    const owners={};
+    for(const [oldIndex,ownerId] of Object.entries(g.owners ?? {})){
+      const station=STATIONS.find(s=>s.name===OLD_STATION_NAMES[Number(oldIndex)]);
+      if(station?.properties[0])owners[station.properties[0].id]=ownerId;
+    }
+    g.owners=owners;
   }
-  g.owners = owners; g.phase = 'roll'; g.pending = null; g.lastRoll = null;
-  log(g, '路線マップがリニューアル！ 進行中のターンをリセットしました。', 'system');
+  g.version=3;g.poorGodId=null;g.actionSeq=g.actionSeq ?? 0;g.logSeq=g.logSeq ?? (g.logs?.length ?? 0);
+  g.players=g.players.map(p=>({ ...p,cards:[...(p.cards ?? []),...Array(Math.min(p.express ?? 0,3)).fill('express')].slice(0,CARD_LIMIT),shield:p.shield ?? 0,express:0,rollBonus:0,fixedDie:null }));
+  g.phase='roll';g.pending=null;g.lastRoll=null;
+  log(g,'全国路線が大幅リニューアル！ 進行中の操作を一度リセットしました。','system');
   return g;
 }
 export function joinGame(game, { id, token, name }) {
@@ -150,7 +250,16 @@ export function joinGame(game, { id, token, name }) {
   log(g, `${name}さんが参加しました！`, 'system');
   return g;
 }
-function endTurn(g) {
+function endTurn(g, rng = Math.random) {
+  const actor=g.players[g.turnIndex];
+  if (g.poorGodId===actor?.id && g.status==='playing') {
+    let amount=-(Math.floor(rng()*4)+1)*90;
+    let text='貧乏神がムダ遣い！';
+    if (actor.shield>0) { actor.shield--;amount=0;text='単位取得のおまもりで貧乏神を防御！'; }
+    actor.money+=amount;
+    log(g,`👻 ${actor.name}さん：${text} ${amount? '−'+money(amount):''}`,'loss');
+    announce(g,'poor',{playerId:actor.id,money:amount,message:text});
+  }
   g.pending = null; g.phase = 'roll';
   if (g.turnIndex === g.players.length - 1) {
     if (g.round >= g.rounds) {
@@ -169,6 +278,21 @@ function endTurn(g) {
   } else g.turnIndex++;
   g.turnStartedAt = Date.now();
 }
+function attachPoorGod(g, goalPlayer) {
+  if(g.players.length<2)return;
+  const candidates=g.players.filter(p=>p.id!==goalPlayer.id);
+  const worst=[...candidates].sort((a,b)=>shortestPath(b.pos,g.destination).length-shortestPath(a.pos,g.destination).length)[0];
+  g.poorGodId=worst.id;
+  log(g,`👻 貧乏神が${worst.name}さんに取りついた！ 誰かに接触すると移せます`,'loss');
+}
+function passPoorGod(g, actor) {
+  const other=g.players.find(p=>p.id!==actor.id&&p.pos===actor.pos);
+  if(!other)return;
+  if(g.poorGodId===actor.id)g.poorGodId=other.id;
+  else if(g.poorGodId===other.id)g.poorGodId=actor.id;
+  else return;
+  log(g,`👻 貧乏神が${nameOf(g,g.poorGodId)}さんに移った！`,'loss');
+}
 function resolveLanding(g, actor, rng) {
   const station = STATIONS[actor.pos];
   if (station.id === g.destination) {
@@ -176,6 +300,7 @@ function resolveLanding(g, actor, rng) {
     log(g, `🎯 ${actor.name}さんが目的地「${station.name}」に到着！ +1,100万円`, 'goal');
     announce(g, 'goal', { playerId: actor.id, station: station.name, money: 1100 });
     g.destination = nextGoal(station.id, rng);
+    attachPoorGod(g,actor);
   }
   if (station.type === 'event') {
     const evt = choose(EVENTS, rng); let delta = evt.money;
@@ -184,6 +309,12 @@ function resolveLanding(g, actor, rng) {
     actor.money += delta;
     log(g, `${actor.name}さん：${message} ${delta > 0 ? '+' : delta < 0 ? '−' : ''}${delta ? money(delta) : ''}`, delta < 0 ? 'loss' : 'income');
     announce(g, 'event', { playerId: actor.id, station: station.name, message, money: delta });
+  }
+  if(station.type==='card') {
+    const keys=Object.keys(CARDS);
+    const found=choose(keys,rng);
+    if(actor.cards.length<CARD_LIMIT){actor.cards.push(found);log(g,`🃏 ${actor.name}さんが「${CARDS[found].name}」を入手！`,'income');announce(g,'card',{playerId:actor.id,message:CARDS[found].name});}
+    else {actor.money+=80;log(g,`カード満杯！ ${actor.name}さんに80万円のボーナス`,'income');}
   }
   if (station.type === 'city' && station.properties.some(prop => !g.owners[prop.id])) {
     g.phase = 'decide'; g.pending = { type: 'city', index: station.id };
@@ -208,22 +339,29 @@ export function applyAction(game, actorId, action, { rng = Math.random, connecte
     announce(g, 'start'); log(g, `ゲームスタート！ ${g.rounds}年勝負です 🎲`, 'system');
   } else if (action?.type === 'roll') {
     if (g.status !== 'playing' || !isTurn || g.phase !== 'roll') throw Error('今はサイコロを振れません。');
-    const die = Math.floor(rng() * 6) + 1;
-    const boost = actor.express > 0 ? 2 : 0;
+    const die = actor.fixedDie ?? Math.floor(rng() * 6) + 1;
+    const boost = (actor.express ?? 0) > 0 ? 2 : 0;
     if (boost) actor.express--;
+    const extra = actor.rollBonus ?? 0; const fixed = actor.fixedDie; actor.rollBonus=0;actor.fixedDie=null;
     g.phase = 'move';
-    g.pending = { type: 'move', playerId: actor.id, remaining: die + boost, total: die + boost, path: [actor.pos] };
-    g.lastRoll = { playerId: actorId, die, boost, from: actor.pos, steps: die + boost, at: Date.now() };
-    announce(g, 'roll', { playerId: actor.id, die, boost });
+    g.pending = { type: 'move', playerId: actor.id, remaining: die + boost + extra, total: die + boost + extra, path: [actor.pos] };
+    g.lastRoll = { playerId: actorId, die, boost, from: actor.pos, steps: die + boost + extra, at: Date.now() };
+    announce(g, 'roll', { playerId: actor.id, die, boost: boost + extra });
     log(g, `🎲 ${actor.name}さんは${die}${boost ? '（特急+2）' : ''}！ 行き先を選択中`, 'move');
   } else if (action?.type === 'move') {
     if (g.status !== 'playing' || !isTurn || g.phase !== 'move' || g.pending?.type !== 'move') throw Error('今は移動できません。');
     const to = action.to;
     if (!Number.isInteger(to) || !NEIGHBORS[actor.pos].includes(to)) throw Error('線路でつながった隣の駅を選んでください。');
-    const from = actor.pos; actor.pos = to;
+    const from = actor.pos;
+    const edge=edgeBetween(from,to);
+    if(!edge)throw Error('このルートは利用できません。');
+    if(actor.money < edge.fare)throw Error('交通費が足りません。');
+    actor.money-=edge.fare;
+    actor.pos = to;
+    passPoorGod(g,actor);
     g.pending.remaining--; g.pending.path.push(to);
-    announce(g, 'step', { playerId: actor.id, from, to, remaining: g.pending.remaining });
-    if (to === g.destination || g.pending.remaining === 0) {
+    announce(g, 'step', { playerId: actor.id, from, to, mode:edge.mode, fare:edge.fare, remaining: g.pending.remaining });
+    if (g.pending.remaining === 0) {
       log(g, `🚂 ${actor.name}さんが${STATIONS[to].name}に到着！`, 'move');
       resolveLanding(g, actor, rng);
     }
@@ -241,22 +379,45 @@ export function applyAction(game, actorId, action, { rng = Math.random, connecte
     const gained = selected.map(p => p.name).join('・');
     log(g, `🏠 ${actor.name}さんが${station.name}で「${gained}」を購入！ −${money(total)}`, 'income');
     announce(g, 'buy', { playerId: actor.id, station: station.name, items: selected.length, money: -total });
-    endTurn(g);
+    endTurn(g,rng);
   } else if (action?.type === 'shop') {
-    if (g.status !== 'playing' || !isTurn || g.pending?.type !== 'shop' || !(action.item in SHOP_ITEMS)) throw Error('買い物できません。');
-    const item = SHOP_ITEMS[action.item];
-    if (actor.money < item.price || actor[action.item] >= 3) throw Error('所持金不足、または所持上限（3個）です。');
-    actor.money -= item.price; actor[action.item]++;
-    log(g, `${item.icon} ${actor.name}さんが${item.name}を ${money(item.price)} で購入`, 'income');
-    announce(g, 'buy', { playerId: actor.id, station: STATIONS[actor.pos].name, money: -item.price, items: 1 });
-    endTurn(g);
+    if (g.status !== 'playing' || !isTurn || g.phase!=='decide' || g.pending?.type!=='shop' || !(action.item in CARDS)) throw Error('買い物できません。');
+    const item=CARDS[action.item];
+    if(actor.money<item.price || actor.cards.length>=CARD_LIMIT)throw Error('所持金不足、またはカードは8枚までです。');
+    actor.money-=item.price;actor.cards.push(action.item);
+    log(g,`${item.icon} ${actor.name}さんが${item.name}を${money(item.price)}で購入`,'income');
+    announce(g,'buy',{playerId:actor.id,station:STATIONS[actor.pos].name,money:-item.price,items:1});
+    endTurn(g,rng);
+  } else if (action?.type === 'play_card') {
+    if(g.status!=='playing'||!isTurn||g.phase!=='roll')throw Error('カードはサイコロを振る前に使えます。');
+    const type=action.card;
+    if(typeof type!=='string'||!(type in CARDS)||!actor.cards.includes(type))throw Error('そのカードを持っていません。');
+    if(['express','shinkansen'].includes(type)&&actor.rollBonus)throw Error('移動カードは重ねて使えません。');
+    if(type==='local'&&actor.fixedDie!==null)throw Error('サイコロ固定は重ねて使えません。');
+    actor.cards.splice(actor.cards.indexOf(type),1);
+    if(type==='express')actor.rollBonus=2;
+    else if(type==='shinkansen')actor.rollBonus=4;
+    else if(type==='local')actor.fixedDie=1;
+    else if(type==='grant')actor.money+=400;
+    else if(type==='guard')actor.shield++;
+    else if(type==='warp'){
+      const choices=STATIONS.filter(st=>st.type==='city'&&st.id!==actor.pos);
+      actor.pos=choose(choices,rng).id;
+      passPoorGod(g,actor);
+      log(g,`✈️ ${actor.name}さんが${STATIONS[actor.pos].name}へぶっとび！`,'move');
+      announce(g,'warp',{playerId:actor.id,to:actor.pos,message:STATIONS[actor.pos].name});
+      resolveLanding(g,actor,rng);
+      return g;
+    }
+    log(g,`🃏 ${actor.name}さんが「${CARDS[type].name}」を使用！`,'income');
+    announce(g,'card_use',{playerId:actor.id,message:CARDS[type].name});
   } else if (action?.type === 'skip') {
     if (g.status !== 'playing' || !isTurn || g.phase !== 'decide') throw Error('見送れません。');
-    endTurn(g);
+    endTurn(g,rng);
   } else if (action?.type === 'skip_offline') {
     if (g.status !== 'playing' || connected.includes(g.players[g.turnIndex].id)) throw Error('オンラインの人はスキップできません。');
     log(g, `${g.players[g.turnIndex].name}さんがオフラインのためパス`, 'system');
-    endTurn(g);
+    endTurn(g,rng);
   } else if (action?.type === 'remove') {
     if (g.status !== 'lobby' || !(isHost || actorId === action.playerId)) throw Error('ロビーでのみ退出・整理できます。');
     const target = g.players.find(p => p.id === action.playerId);
@@ -288,7 +449,7 @@ export function publicState(g, connected = []) {
       goalSteps: shortestPath(p.pos, g.destination).length - 1,
       online: connected.includes(p.id), propertyCount: ownedProperties(g, p.id).length,
     })),
-    stations: STATIONS, links: LINKS, neighbors: NEIGHBORS,
+    stations: STATIONS, links: LINKS, edges: EDGES, neighbors: NEIGHBORS, cardsCatalog: CARDS,
     suggestedRoute, shopItems: SHOP_ITEMS,
   };
 }

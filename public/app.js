@@ -12,6 +12,7 @@ const face = n => ['⚀','⚁','⚂','⚃','⚄','⚅'][Math.max(0,Math.min(5,n 
 let state = null, room = null, socket = null, token = null, playerId = null;
 let reconnectTimer, reconnectCount = 0, intentionalClose = false, selectedStation = null, toastTimer;
 let sessionId = 0, leaving = false, zoom = 1, centeredRoom = null, momentTimer;
+let overview = false, camera = null;
 let lastMomentSeq = null, previousPositions = new Map(), previousMoney = new Map();
 let selectedProperties = new Set(), purchaseKey = '';
 
@@ -55,7 +56,7 @@ function connect(code, name, isRetry = false) {
   clearTimeout(reconnectTimer);
   if (!isRetry) {
     ++sessionId; reconnectCount = 0; state = null; centeredRoom = null;
-    previousPositions.clear(); previousMoney.clear(); lastMomentSeq = null; selectedProperties.clear(); purchaseKey = '';
+    previousPositions.clear(); previousMoney.clear(); lastMomentSeq = null; selectedProperties.clear(); purchaseKey = ''; overview = false; camera = null;
   }
   const currentSession = sessionId; intentionalClose = false;
   if (socket) { const old = socket; socket = null; old.onclose = null; old.close(); }
@@ -119,6 +120,7 @@ $('game').addEventListener('click', e => {
     case 'buy_many': send('buy_many', { items:[...selectedProperties] }); break;
     case 'skip': send('skip'); break;
     case 'shop': send('shop', { item:button.dataset.item }); break;
+    case 'play_card': send('play_card',{card:button.dataset.card}); break;
     case 'skip_offline': send('skip_offline'); break;
     case 'restart': send('restart'); break;
     case 'remove': send('remove', { playerId:button.dataset.id }); break;
@@ -132,25 +134,37 @@ $('game').addEventListener('change', e => {
     updatePurchaseSummary();
   }
 });
-function setZoom(next) {
-  const scroller = $('mapScroll'); const canvas = $('mapCanvas');
-  const mid = (scroller.scrollLeft + scroller.clientWidth / 2) / canvas.scrollWidth;
-  zoom = Math.max(.75, Math.min(1.75, next));
-  canvas.style.width = `${Math.round(1200 * zoom)}px`;
-  scroller.scrollLeft = mid * canvas.scrollWidth - scroller.clientWidth / 2;
+function setZoom(value) {
+  zoom = Math.max(.6, Math.min(2.2, value));
+  overview=false;
+  $('mapOverview').classList.remove('is-on');
+  focusMap();
 }
-$('mapZoomIn').addEventListener('click', () => setZoom(zoom + .2));
-$('mapZoomOut').addEventListener('click', () => setZoom(zoom - .2));
-$('mapCenter').addEventListener('click', () => focusMap());
+$('mapZoomIn').addEventListener('click', () => setZoom(zoom * 1.22));
+$('mapZoomOut').addEventListener('click', () => setZoom(zoom / 1.22));
+$('mapCenter').addEventListener('click', () => {overview=false;camera=null;$('mapOverview').classList.remove('is-on');focusMap();});
+$('mapOverview').addEventListener('click', () => { overview=!overview;camera=null;$('mapOverview').classList.toggle('is-on',overview);focusMap(); });
 function focusMap() {
-  if (!state) return;
-  const station = state.stations.find(s => s.id === (state.players.find(p => p.id === playerId)?.pos ?? state.players[state.turnIndex]?.pos));
-  if (!station) return;
-  const scroller = $('mapScroll'); const canvas = $('mapCanvas');
-  const scale = canvas.scrollWidth / 1200;
-  scroller.scrollTo({ left:Math.max(0, station.x * scale - scroller.clientWidth / 2), behavior:'smooth' });
+  if(!state)return;
+  const me=state.players.find(p=>p.id===playerId) ?? state.players[state.turnIndex];
+  const st=state.stations[me?.pos];if(!st)return;
+  camera={x:st.x,y:st.y};
+  updateCamera(true);
 }
-
+function updateCamera(immediate=false) {
+  if(!state)return;
+  const svg=$('railMap');
+  const me=state.players.find(p=>p.id===playerId) ?? state.players[state.turnIndex];
+  const st=state.stations[me?.pos];if(!st)return;
+  if(overview){svg.setAttribute('viewBox','0 0 1200 850');return;}
+  const box=svg.getBoundingClientRect();
+  const ratio=Math.max(.7,box.width/Math.max(1,box.height));
+  const h=420/zoom, w=h*ratio;
+  const x=Math.max(0,Math.min(1200-w,(camera?.x??st.x)-w/2));
+  const y=Math.max(0,Math.min(850-h,(camera?.y??st.y)-h/2));
+  svg.setAttribute('viewBox',`${x} ${y} ${w} ${h}`);
+}
+window.addEventListener('resize',()=>updateCamera(true));
 function render() {
   const s = state; if (!s) return;
   const me = s.players.find(p => p.id === playerId);
@@ -166,6 +180,7 @@ function render() {
   renderPlayers(s, active, isHost);
   $('logsList').innerHTML = s.logs.slice(0, 16).map(e => `<div class="log-item log-${esc(e.kind)}">${esc(e.text)}</div>`).join('');
   if (centeredRoom !== room) { centeredRoom = room; requestAnimationFrame(focusMap); }
+  else if (!overview) { const st=s.stations[me?.pos]; if(st) { camera={x:st.x,y:st.y}; updateCamera(); } }
   if (lastMomentSeq === null) lastMomentSeq = s.lastAction?.seq ?? 0;
   else if (s.lastAction && s.lastAction.seq !== lastMomentSeq) { lastMomentSeq = s.lastAction.seq; showMoment(s.lastAction, s); }
 }
@@ -174,7 +189,7 @@ function renderHud(s, active) {
     const delta = previousMoney.has(p.id) ? p.money - previousMoney.get(p.id) : 0;
     previousMoney.set(p.id, p.money);
     return `<div class="money-board ${p.id === active?.id && s.status === 'playing' ? 'is-turn' : ''}" style="--player:${p.color}">
-      <div class="money-board-top"><span class="money-player-dot">🚂</span><strong>${esc(p.name)}</strong><small>${p.id === playerId ? 'あなた' : p.online ? '● 接続中' : '○ オフライン'}</small></div>
+      <div class="money-board-top"><span class="money-player-dot">🚂</span><strong>${esc(p.name)}</strong><small>${p.id === playerId ? 'あなた' : p.online ? '● 接続中' : '○ オフライン'}${s.poorGodId === p.id ? ' 👻 貧乏神' : ''}</small></div>
       <div class="money-label">持ち金</div><div class="money-number">${money(p.money)}</div>
       <div class="money-meta"><span>総資産 <b>${money(p.worth)}</b></span><span>物件 <b>${p.propertyCount}件</b></span></div>
       ${delta ? `<div class="money-pop ${delta > 0 ? 'positive' : 'negative'}">${delta > 0 ? '+' : '−'}${money(Math.abs(delta))}</div>` : ''}
@@ -199,14 +214,14 @@ function renderActions(s, me, active, isHost) {
     return;
   }
   if (s.phase === 'roll') {
-    el.innerHTML = `<h2 class="turn-title">🎲 ${esc(me.name)}さんの番！</h2><p class="turn-sub">出目の数だけ、好きな線路を進めます。<br>目的地まで最短 <b>${me.goalSteps}マス</b></p><div class="dice-face">🎲</div><button class="move-btn" data-action="roll">サイコロを振る！</button><div class="item-summary">🚄 特急 ${me.express}枚　🛡️ おまもり ${me.shield}個</div>`;
+    el.innerHTML = `<h2 class="turn-title">🎲 ${esc(me.name)}さんの番！</h2><p class="turn-sub">出目の数だけ、好きな線路を進めます。<br>目的地まで最短 <b>${me.goalSteps}マス</b></p><div class="dice-face">🎲</div><button class="move-btn" data-action="roll">サイコロを振る！</button><div class="item-summary">🎒 カード${me.cards.length} / 8枚　🛡️ 防御${me.shield}</div>${renderCardInventory(s,me,true)}`;
     return;
   }
   if (s.phase === 'move') {
     const remaining = s.pending.remaining;
     const options = s.neighbors[me.pos];
     const hint = s.suggestedRoute?.[1];
-    el.innerHTML = `<h2 class="turn-title">🚂 どっちへ進む？</h2><div class="remaining"><strong>${remaining}</strong><span>マス のこり</span></div><div class="move-progress">${Array.from({ length:s.pending.total }, (_,i) => `<i class="${i < s.pending.total - remaining ? 'done' : ''}"></i>`).join('')}</div><p class="turn-sub">地図上の<strong>黄色く光る駅</strong>をタップ。下のボタンでも移動できます。</p><div class="route-choices">${options.map(i => `<button type="button" class="route-choice ${i === hint ? 'recommended' : ''}" data-action="step" data-to="${i}"><span>🚉 ${esc(s.stations[i].name)}</span><small>${i === hint ? '🎯 最短ルート' : 'この駅へ →'}</small></button>`).join('')}</div><p class="mini-help">移動方向は毎マス変更できます。引き返すことも可能です。</p>`;
+    el.innerHTML = `<h2 class="turn-title">🚂 どっちへ進む？</h2><div class="remaining"><strong>${remaining}</strong><span>マス のこり</span></div><div class="move-progress">${Array.from({ length:s.pending.total }, (_,i) => `<i class="${i < s.pending.total - remaining ? 'done' : ''}"></i>`).join('')}</div><p class="turn-sub">列車の周りに出る<strong>方向矢印をタップ</strong>して1マスずつ進もう。青＝海路、紫＝空路です。</p><div class="route-choices">${options.map(i => `<button type="button" class="route-choice ${i === hint ? 'recommended' : ''}" data-action="step" data-to="${i}"><span>🚉 ${esc(s.stations[i].name)}</span><small>${s.edges.find(e=>(e.a===me.pos&&e.b===i)||(e.b===me.pos&&e.a===i))?.mode==='air'?'✈ 空路':s.edges.find(e=>(e.a===me.pos&&e.b===i)||(e.b===me.pos&&e.a===i))?.mode==='sea'?'⛴ 海路':i===hint?'🎯 最短':'鉄道'} →</small></button>`).join('')}</div><p class="mini-help">移動方向は毎マス変更できます。引き返すことも可能です。</p>`;
     return;
   }
   const pending = s.pending;
@@ -214,8 +229,15 @@ function renderActions(s, me, active, isHost) {
     renderPropertyShop(s, me, pending.index, el); return;
   }
   if (pending?.type === 'shop') {
-    el.innerHTML = `<h2 class="turn-title">🎁 カードショップ</h2><p class="turn-sub">所持金 <b>${money(me.money)}</b><br>使えるアイテムを選ぼう（各3枚まで）</p><div class="shop-row">${Object.entries(s.shopItems).map(([id,item]) => `<button class="shop-btn" data-action="shop" data-item="${id}" ${me.money < item.price || me[id] >= 3 ? 'disabled' : ''}>${item.icon} ${esc(item.name)}<small>${esc(item.description)}<br><b>${money(item.price)}</b> ／ 所持 ${me[id]}</small></button>`).join('')}</div><button class="outline-btn wide" data-action="skip">何も買わずに終了</button>`;
+    el.innerHTML = `<h2 class="turn-title">🎁 カードショップ</h2><p class="turn-sub">所持金 <b>${money(me.money)}</b><br>使えるカードを選ぼう（合計8枚まで）</p><div class="shop-row">${Object.entries(s.shopItems).map(([id,item]) => `<button class="shop-btn" data-action="shop" data-item="${id}" ${me.money < item.price || me.cards.length >= 8 ? 'disabled' : ''}>${item.icon} ${esc(item.name)}<small>${esc(item.description)}<br><b>${money(item.price)}</b> ／ 所持 ${me.cards.filter(c=>c===id).length}</small></button>`).join('')}</div><button class="outline-btn wide" data-action="skip">何も買わずに終了</button>`;
   }
+}
+function renderCardInventory(s,me,enabled) {
+  if(!me.cards?.length)return '<p class="turn-sub">カードはまだありません。カード駅でゲットしよう！</p>';
+  return `<div class="card-inventory">${me.cards.map((key,i)=>{
+    const card=s.cardsCatalog[key];if(!card)return '';
+    return `<button type="button" class="inventory-card" data-action="play_card" data-card="${key}" ${enabled?'':'disabled'} title="${esc(card.description)}"><span>${card.icon} ${esc(card.name)}</span><small>${esc(card.description)}</small></button>`;
+  }).join('')}</div>`;
 }
 function renderPropertyShop(s, me, index, el) {
   const station = s.stations[index];
@@ -258,6 +280,9 @@ function showMoment(a, s) {
   if (a.type === 'roll') { title = `サイコロは ${a.die}！`; subtitle = a.boost ? `特急きっぷで +${a.boost} マス！` : '進む道を選ぼう！'; symbol = face(a.die); }
   else if (a.type === 'goal') { title = '目的地に到着！'; subtitle = `🎉 ${a.station}　+${money(a.money)}`; symbol = '🏆'; }
   else if (a.type === 'event') { title = a.money < 0 ? 'ハプニング！' : 'イベント発生！'; subtitle = `${a.message} ${a.money ? `${a.money > 0 ? '+' : ''}${money(a.money)}` : ''}`; symbol = a.money < 0 ? '💦' : '🎁'; }
+  else if (a.type === 'poor') { title='貧乏神のいたずら！';subtitle=`${a.message} ${a.money ? money(a.money) : ''}`;symbol='👻'; }
+  else if(a.type==='warp'){title='ぶっとび！';subtitle=`${a.message}へ！`;symbol='✈️';}
+  else if(a.type==='card'||a.type==='card_use'){title=a.type==='card'?'カード獲得！':'カード使用！';subtitle=a.message;symbol='🃏';}
   else if (a.type === 'buy') { title = 'お買い上げ！'; subtitle = `${a.station}　${money(a.money)}`; symbol = '🏠'; }
   else return;
   el.innerHTML = `<div class="moment-sheet"><span class="moment-symbol">${symbol}</span><div class="moment-title">${esc(title)}</div><div class="moment-sub">${esc(subtitle)}</div></div>`;
@@ -293,12 +318,14 @@ function renderMap(s, me, active) {
     svg.append(S('text',{x,y,class:'map-area-name','text-anchor':'middle'},name));
   // Rails: shadow, ties, and animated main line, each edge rendered once.
   const rails = S('g',{class:'rail-layer'});
-  for (const [a,b] of s.links) {
+  for (const {a,b,mode} of s.edges) {
     const start=s.stations[a],end=s.stations[b];
     const d=`M${start.x} ${start.y} L${end.x} ${end.y}`;
-    rails.append(S('path',{d,class:'rail-shadow'}));
-    rails.append(S('path',{d,class:'rail-base'}));
-    rails.append(S('path',{d,class:'rail-ties'}));
+    if(mode==='rail'){
+      rails.append(S('path',{d,class:'rail-shadow'}));
+      rails.append(S('path',{d,class:'rail-base'}));
+      rails.append(S('path',{d,class:'rail-ties'}));
+    } else rails.append(S('path',{d,class:`transport-line ${mode}`}));
   }
   svg.append(rails);
   if (s.status==='playing' && s.suggestedRoute?.length>1) {
@@ -317,16 +344,17 @@ function renderMap(s, me, active) {
     const group=S('g',{class:`station-marker ${type} ${isGoal?'is-goal':''} ${reachable?'reachable':''}`,tabindex:0,role:'button','aria-label':`${name}${reachable?'、ここへ移動可能':''}`});
     if(isGoal)group.append(S('circle',{cx:x,cy:y,r:28,class:'goal-pulse'}));
     if(reachable)group.append(S('circle',{cx:x,cy:y,r:27,class:'reach-ring'}));
-    group.append(S('circle',{cx:x,cy:y,r:17,fill:owner?.color || (type==='city'?'#3979c5':type==='event'?'#ef745c':'#9a6bd1'),class:'station-outer'}));
+    group.append(S('circle',{cx:x,cy:y,r:17,fill:owner?.color || (type==='city'?'#3979c5':type==='event'?'#ef745c':type==='card'?'#ecb94a':'#9a6bd1'),class:'station-outer'}));
     group.append(S('circle',{cx:x,cy:y,r:9,fill:'#fff',opacity:'.95'}));
-    group.append(S('text',{x,y:y+5,class:'station-symbol'},type==='city'?'¥':type==='event'?'!':'★'));
-    const yOffset= [0,2,4,6,8,11,13,15,17,19,21,23,25,27,29,31,33,35].includes(id)?-29:42;
+    group.append(S('text',{x,y:y+5,class:'station-symbol'},type==='city'?'¥':type==='event'?'!':type==='card'?'C':'★'));
+    const yOffset= id%2===0?-28:37;
     const label=S('text',{x,y:y+yOffset,class:`station-label ${reachable?'can-go':''}`,'text-anchor':'middle'},name);
     group.append(label);
     if(isGoal)group.append(S('text',{x,y:y-43,class:'goal-flag','text-anchor':'middle'},'🚩'));
+    if(name.includes('キャンパス'))group.append(S('text',{x:x+24,y:y-15,class:'campus-marker'},'🎓'));
     if(isFullyOwned && owner)group.append(S('text',{x:x+18,y:y-11,class:'owner-flag','text-anchor':'middle'},'★'));
-    group.addEventListener('click',()=>{ if(reachable) send('move',{to:id}); else selectStation(s,id); });
-    group.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); if(reachable)send('move',{to:id}); else selectStation(s,id);} });
+    group.addEventListener('click',()=>selectStation(s,id));
+    group.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); selectStation(s,id);} });
     svg.append(group);
   }
   s.players.forEach((p,i)=>{
@@ -337,6 +365,7 @@ function renderMap(s, me, active) {
     group.append(S('rect',{x:-21,y:-20,width:42,height:39,rx:13,fill:p.color,class:'train-token'}));
     group.append(S('text',{x:0,y:4,'text-anchor':'middle',class:'train-symbol'},'🚂'));
     group.append(S('text',{x:0,y:31,'text-anchor':'middle',class:'token-name'},p.name.slice(0,4)));
+    if(s.poorGodId===p.id)group.append(S('text',{x:24,y:-24,class:'poor-token'},'👻'));
     svg.append(group);
     const prev=previousPositions.get(p.id);
     if(prev!=null && prev!==p.pos && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -345,6 +374,29 @@ function renderMap(s, me, active) {
     }
     previousPositions.set(p.id,p.pos);
   });
+  if(canMove && me){
+    const here=s.stations[me.pos];
+    const recommended=s.suggestedRoute?.[1];
+    s.neighbors[me.pos].forEach((to,i)=>{
+      const dest=s.stations[to];const edge=s.edges.find(e=>(e.a===me.pos&&e.b===to)||(e.b===me.pos&&e.a===to));
+      const dx=dest.x-here.x,dy=dest.y-here.y;
+      const len=Math.hypot(dx,dy)||1;
+      const dX=dx/len,dY=dy/len;
+      const px=here.x+dX*63,py=here.y+dY*63;
+      const angle=Math.atan2(dy,dx)*180/Math.PI;
+      const g=S('g',{class:`direction-choice ${to===recommended?'recommended':''} ${edge.mode}`,role:'button',tabindex:'0', 'aria-label':`${dest.name}方向へ移動`});
+      g.append(S('circle',{cx:px,cy:py,r:30,class:'direction-hit'}));
+      g.append(S('g',{transform:`translate(${px} ${py}) rotate(${angle})`,'pointer-events':'none'}));
+      const arrow=S('path',{d:`M-17 -14 H4 V-24 L29 0 L4 24 V14 H-17 Z`, transform:`translate(${px} ${py}) rotate(${angle})`,class:'direction-arrow'});
+      g.append(arrow);
+      g.append(S('text',{x:px,y:py-32,'text-anchor':'middle',class:'direction-label'},`${edge.mode==='air'?'✈ ':edge.mode==='sea'?'⛴ ':''}${dest.name}`));
+      g.addEventListener('click',()=>send('move',{to}));
+      g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();send('move',{to});}});
+      svg.append(g);
+    });
+  }
+  renderMiniMap(s,me);
+  updateCamera();
   if (selectedStation != null) selectStation(s,selectedStation);
   const current=s.stations[active?.pos];
   $('mapNotice').textContent = canMove ? `🚂 残り${s.pending.remaining}マス｜黄色い駅を選んで進もう！` : `📍 現在の手番：${active ? `${active.name}（${current.name}）` : '出発待ち'}　|　駅を押すと物件を確認できます`;
@@ -353,7 +405,17 @@ function renderMap(s, me, active) {
 function selectStation(s,index) {
   selectedStation=index; const station=s.stations[index]; if(!station)return;
   const available=station.properties.filter(p=>!s.owners[p.id]);
-  const summary=station.type==='city'?`物件 ${station.properties.length}件（購入可 ${available.length}件）｜${station.properties.slice(0,2).map(p=>p.name).join('・')}`:station.type==='event'?'イベントマス：臨時収入や出費が発生':'カードショップ：旅を助けるアイテムが買えます';
+  const summary=station.type==='city'?`物件 ${station.properties.length}件（購入可 ${available.length}件）｜${station.properties.slice(0,2).map(p=>p.name).join('・')}`:station.type==='event'?'イベントマス：臨時収入や出費が発生':station.type==='card'?'カード駅：カードをランダムに1枚獲得':'カードショップ：役立つカードが買えます';
   $('stationInfo').textContent=`${station.name}｜${summary}`;
 }
 if ($('roomCode').value && savedName) { ensureIdentity(); connect($('roomCode').value,savedName); }
+
+function renderMiniMap(s,me){
+  const minimap=$('miniMap');minimap.replaceChildren();
+  for(const e of s.edges){
+    const a=s.stations[e.a],b=s.stations[e.b];
+    minimap.append(S('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:e.mode==='rail'?'#7db4b1':e.mode==='sea'?'#229bb6':'#ad81d3','stroke-width':e.mode==='rail'?3:2}));
+  }
+  const goal=s.stations[s.destination];if(goal)minimap.append(S('circle',{cx:goal.x,cy:goal.y,r:18,fill:'#ed7452',stroke:'white','stroke-width':5}));
+  if(me){const pos=s.stations[me.pos];minimap.append(S('circle',{cx:pos.x,cy:pos.y,r:20,fill:me.color,stroke:'#fff','stroke-width':7}));}
+}
