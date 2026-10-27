@@ -174,3 +174,37 @@
 .station-marker .reach-ring{animation:none;opacity:.6}
 .direction-label{font-size:13px;stroke-width:4}
 @media(max-width:750px){.direction-label{font-size:14px}}
+
+/* v4 — quiet, readable square-tile cartographic styling */
+.map-scroll {background:#d2edf3}
+.map-canvas {background:#d1edf4}
+.map-canvas svg#railMap {background:#cfeaf3}
+.rail-shadow {stroke:#5f8492;stroke-width:9;opacity:.38;stroke-linejoin:round;stroke-linecap:square}
+.rail-base {stroke:#fefefe;stroke-width:6;stroke-linejoin:round;stroke-linecap:square}
+.rail-ties {stroke:#739ca9;stroke-width:1.8;stroke-dasharray:2 8;stroke-linejoin:round;stroke-linecap:butt}
+.suggested-track {display:none}
+.transport-line.long {display:none}
+.map-overview .transport-line.long {display:block;stroke-width:3.5;stroke-dasharray:7 12;opacity:.7}
+.station-marker {cursor:pointer}
+.station-tile {stroke:#fff;stroke-width:2.5;filter:drop-shadow(0 1px 1px #29476045)}
+.station-marker:hover .station-tile,.station-marker:focus-visible .station-tile {stroke:#224b81;stroke-width:3.4}
+.tile-symbol {font-size:10px;font-weight:950;text-anchor:middle;fill:#fff;pointer-events:none;stroke:none}
+.reach-tile {fill:#ffdb6c66;stroke:#ebac1d;stroke-width:2;animation:tileBlink 1.2s infinite alternate;pointer-events:none}
+.station-marker .goal-pulse {fill:#fae3ae6b;stroke:#ff695e;stroke-width:2;animation:none}
+@keyframes tileBlink {to {opacity:.4;stroke-width:3.5}}
+.station-tag {pointer-events:none;filter:drop-shadow(0 2px 1px #12334d22)}
+.station-tag-bg {fill:#fffdf6;stroke:#89a2b1;stroke-width:.8}
+.station-tag-name {font-weight:850;font-size:12px;fill:#1d4466;stroke:none;letter-spacing:.1px}
+.station-tag.key-location .station-tag-bg {fill:#fff2ca;stroke:#d59c38;stroke-width:1.4}
+.station-tag.key-location .station-tag-name {fill:#21486b}
+.train-token {stroke:#fff;stroke-width:2.5;filter:drop-shadow(0 2px 2px #163d5369)}
+.train-symbol {font-size:14px}
+.token-name {font-size:9px;stroke:#fff;stroke-width:2;paint-order:stroke;fill:#233950;font-weight:900}
+.poor-token {font-size:16px}
+.direction-hit {fill:#fffffff4;stroke:#286db3;stroke-width:2.7}
+.direction-choice.recommended .direction-hit {stroke:#d79727;stroke-width:3;animation:none}
+.direction-label {font-size:11px;font-weight:900;stroke:#fff;stroke-width:3.5;paint-order:stroke}
+.minimap-frame {width:clamp(106px,16%,145px);border:2px solid #fff;padding:4px}
+.minimap-frame small {font-size:8px}
+@media(max-width:750px){.minimap-frame{width:99px;top:8px;right:8px}.direction-label{font-size:12px}}
+@media(prefers-reduced-motion:reduce){.reach-tile{animation:none}}
