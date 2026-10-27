@@ -21,7 +21,7 @@
     <div class="welcome-copy">
       <span class="eyebrow"><span class="pulse"></span> MULTIPLAYER BOARD GAME</span>
       <h1>次の駅で、<br><em>一攫千金。</em></h1>
-      <p>サイコロを振って、日本をぐるりと旅しよう。<br>物件を集めて、目的地を目指して、いちばんのお金持ちに！</p>
+      <p>サイコロを振り、分岐する路線を選んで日本を旅しよう。<br>街の物件を買い集め、目的地を目指す資産王レース！</p>
       <div class="feature-row"><span>🎮 2〜4人対戦</span><span>⚡ 10分から遊べる</span><span>📱 スマホ対応</span></div>
       <div class="mini-route" aria-hidden="true"><span>🏙️ 東京</span><i></i><span>🏯 京都</span><i></i><span>🍜 博多</span><i></i><span>❄️ 札幌</span></div>
     </div>
@@ -44,20 +44,27 @@
       <div><span class="eyebrow">THE RAILWAY ADVENTURE</span><h1>日本一周 <em>資産王レース</em></h1></div>
       <div class="game-head-actions"><div class="room-chip"><small>ROOM CODE</small><strong id="roomDisplay">------</strong></div><button id="copyInvite" class="icon-btn" title="招待リンクをコピー">🔗 招待</button><button id="leaveRoom" class="icon-btn muted">退出</button></div>
     </div>
+    <div class="player-hud" id="playerHud" aria-label="各プレイヤーの所持金"></div>
     <div class="board-grid">
       <section class="map-card">
-        <div class="map-top"><div class="round-badge"><span>⏳</span> <strong id="roundBadge">ロビー</strong></div><div class="destination"><span>🎯 目的地</span><strong id="destinationName">-</strong><small>到着で +1,100万円!</small></div></div>
-        <div class="map-scroll"><div class="map-canvas"><svg id="railMap" viewBox="0 0 1000 720" role="img" aria-label="鉄道ボードのマップ"></svg></div></div>
-        <div class="map-bottom"><div class="legend"><span><i class="legend-dot city"></i>物件駅</span><span><i class="legend-dot event"></i>イベント駅</span><span><i class="legend-dot shop"></i>ショップ</span></div><div id="stationInfo" class="station-info">駅をタップすると詳細を見られます</div></div>
+        <div class="map-top">
+          <div class="round-badge"><span>📅</span> <strong id="roundBadge">ロビー</strong></div>
+          <div class="destination"><span class="destination-caption">🚩 めざせ！</span><strong id="destinationName">-</strong><small>到着賞金 +1,100万円</small></div>
+          <div class="map-tools"><button id="mapZoomOut" class="map-tool" type="button" title="縮小" aria-label="地図を縮小">－</button><button id="mapZoomIn" class="map-tool" type="button" title="拡大" aria-label="地図を拡大">＋</button><button id="mapCenter" class="map-tool full" type="button">現在地</button></div>
+        </div>
+        <div class="map-scroll" id="mapScroll"><div class="map-canvas" id="mapCanvas"><svg id="railMap" viewBox="0 0 1200 850" role="img" aria-label="選んで移動できる日本の鉄道路線図"></svg></div></div>
+        <div id="mapNotice" class="map-notice">路線図上の駅を選んで詳細を確認できます</div>
+        <div class="map-bottom"><div class="legend"><span><i class="legend-dot city"></i>物件駅</span><span><i class="legend-dot event"></i>イベント駅</span><span><i class="legend-dot shop"></i>ショップ</span><span><i class="legend-dot reachable"></i>移動できる駅</span></div><div id="stationInfo" class="station-info">線路がつながる駅へ進めます</div></div>
       </section>
       <aside class="sidebar">
-        <section class="turn-card" id="turnCard"><div class="section-kicker">YOUR NEXT MOVE</div><div id="actionContent"></div></section>
+        <section class="turn-card" id="turnCard"><div class="action-head"><div class="section-kicker">🎮 コマンド</div><span id="turnIndicator" class="turn-indicator">TURN</span></div><div id="actionContent"></div></section>
         <section class="players-card"><div class="section-title"><h2>🏆 資産ランキング</h2><span id="playerCount">0 / 4人</span></div><div id="playersList" class="players-list"></div></section>
         <section class="history-card"><div class="section-title"><h2>📢 旅のニュース</h2><span>LIVE</span></div><div id="logsList" class="logs-list"></div><div class="emoji-row"><button data-emote="👏" title="拍手">👏</button><button data-emote="😂" title="笑う">😂</button><button data-emote="🔥" title="いいね">🔥</button><button data-emote="😱" title="びっくり">😱</button></div></section>
       </aside>
     </div>
     <footer class="game-footer">RAIL TRIP · お金はすべてゲーム内の架空のものです。桃太郎電鉄とは無関係のオリジナルゲームです。</footer>
   </main>
+  <div id="gameMoment" class="game-moment" aria-live="polite" aria-atomic="true"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

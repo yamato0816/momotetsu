@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { applyAction, joinGame, newGame, publicState } from './game.js';
+import { applyAction, joinGame, newGame, publicState, upgradeGame } from './game.js';
 
 const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers });
@@ -75,8 +75,9 @@ export class GameRoom extends DurableObject {
     const input = { id: url.searchParams.get('id'), token: url.searchParams.get('token'), name: url.searchParams.get('name')?.trim() };
     if (!validPlayer(input)) return json({ error: 'Invalid player' }, 400);
     return this.ctx.blockConcurrencyWhile(async () => {
-      const game = await this.ctx.storage.get('game');
+      let game = await this.ctx.storage.get('game');
       if (!game) return json({ error: '部屋が見つかりません。' }, 404);
+      if (game.version !== 2) { game = upgradeGame(game); await this.ctx.storage.put('game', game); }
       let joined;
       try { joined = joinGame(game, input); } catch (e) { return json({ error: e.message }, 409); }
       if (joined.players.length !== game.players.length) await this.ctx.storage.put('game', joined);
@@ -97,7 +98,8 @@ export class GameRoom extends DurableObject {
     if (!actorId) return;
     try {
       await this.ctx.blockConcurrencyWhile(async () => {
-        const g = await this.ctx.storage.get('game');
+        let g = await this.ctx.storage.get('game');
+        if (g && g.version !== 2) { g = upgradeGame(g); await this.ctx.storage.put('game', g); }
         if (!g || !g.players.some(p => p.id === actorId)) throw Error('参加者ではありません。');
         if (action.type === 'emote') {
           const now = Date.now();

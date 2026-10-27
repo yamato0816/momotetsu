@@ -1,29 +1,26 @@
 const $ = id => document.getElementById(id);
-const svgNS = 'http://www.w3.org/2000/svg';
-const fmt = num => Number(num ?? 0).toLocaleString('ja-JP');
-const esc = text => String(text ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
-const S = (tag, attrs = {}, label = '') => { const el = document.createElementNS(svgNS, tag); for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value); if (label) el.textContent = label; return el; };
-const face = n => ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'][Math.max(0, Math.min(5, n - 1))];
-let state = null;
-let room = null;
-let socket = null;
-let token = null;
-let playerId = null;
-let reconnectTimer = null;
-let reconnectCount = 0;
-let intentionalClose = false;
-let selectedStation = null;
-let toastTimer;
-let sessionId = 0;
-let leaving = false;
+const NS = 'http://www.w3.org/2000/svg';
+const fmt = n => Number(n || 0).toLocaleString('ja-JP');
+const money = value => {
+  const n = Math.abs(Number(value) || 0);
+  const sign = value < 0 ? '−' : '';
+  return `${sign}${n >= 10000 ? `${fmt(Math.floor(n / 10000))}億${n % 10000 ? `${fmt(n % 10000)}万` : ''}` : `${fmt(n)}万`}円`;
+};
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const S = (tag, attrs = {}, txt) => { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); if (txt != null) el.textContent = String(txt); return el; };
+const face = n => ['⚀','⚁','⚂','⚃','⚄','⚅'][Math.max(0,Math.min(5,n - 1))];
+let state = null, room = null, socket = null, token = null, playerId = null;
+let reconnectTimer, reconnectCount = 0, intentionalClose = false, selectedStation = null, toastTimer;
+let sessionId = 0, leaving = false, zoom = 1, centeredRoom = null, momentTimer;
+let lastMomentSeq = null, previousPositions = new Map(), previousMoney = new Map();
+let selectedProperties = new Set(), purchaseKey = '';
 
 const savedName = localStorage.getItem('rail_name') ?? '';
 $('playerName').value = savedName;
 $('roomCode').value = new URL(location.href).searchParams.get('room')?.toUpperCase() ?? '';
 $('roomCode').addEventListener('input', e => { e.target.value = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6); });
-
-function notify(message) { const t = $('toast'); t.textContent = message; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3400); }
-function setConnection(type, text) { $('connection').className = `connection ${type}`; $('connection').innerHTML = `<i></i> ${esc(text)}`; }
+function notify(message) { const el = $('toast'); el.textContent = message; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3500); }
+function setConnection(type, label) { $('connection').className = `connection ${type}`; $('connection').innerHTML = `<i></i> ${esc(label)}`; }
 function ensureIdentity() {
   if (!playerId || !token) {
     playerId = localStorage.getItem('rail_player_id') || crypto.randomUUID();
@@ -35,8 +32,7 @@ function ensureIdentity() {
 function nameInput() {
   const name = $('playerName').value.trim();
   if (!name || name.length > 14 || /[<>]/.test(name)) { notify('名前を1〜14文字で入力してください。'); $('playerName').focus(); return null; }
-  localStorage.setItem('rail_name', name);
-  return name;
+  localStorage.setItem('rail_name', name); return name;
 }
 function switchToGame() { $('gate').hidden = true; $('game').hidden = false; }
 function switchToGate() { $('gate').hidden = false; $('game').hidden = true; state = null; setConnection('', '未接続'); }
@@ -44,12 +40,10 @@ async function createRoom() {
   const name = nameInput(); if (!name) return;
   ensureIdentity(); $('createRoom').disabled = true;
   try {
-    const resp = await fetch('/api/rooms', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: playerId, token, name, rounds: 6 }) });
-    const json = await resp.json();
-    if (!resp.ok) throw Error(json.error ?? '部屋を作れませんでした。');
-    connect(json.room, name);
-  } catch (e) { notify(e.message); }
-  finally { $('createRoom').disabled = false; }
+    const resp = await fetch('/api/rooms', { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify({ id:playerId, token, name, rounds:6 }) });
+    const data = await resp.json(); if (!resp.ok) throw Error(data.error ?? '部屋を作れませんでした。');
+    connect(data.room, name);
+  } catch(e) { notify(e.message); } finally { $('createRoom').disabled = false; }
 }
 function joinRoom() {
   const name = nameInput(); if (!name) return;
@@ -59,53 +53,52 @@ function joinRoom() {
 }
 function connect(code, name, isRetry = false) {
   clearTimeout(reconnectTimer);
-  if (!isRetry) { ++sessionId; reconnectCount = 0; }
-  const currentSession = sessionId;
-  intentionalClose = false;
+  if (!isRetry) {
+    ++sessionId; reconnectCount = 0; state = null; centeredRoom = null;
+    previousPositions.clear(); previousMoney.clear(); lastMomentSeq = null; selectedProperties.clear(); purchaseKey = '';
+  }
+  const currentSession = sessionId; intentionalClose = false;
   if (socket) { const old = socket; socket = null; old.onclose = null; old.close(); }
-  room = code;
-  switchToGame();
-  $('roomDisplay').textContent = code;
+  room = code; switchToGame(); $('roomDisplay').textContent = code;
   const url = new URL(location.href); url.searchParams.set('room', code); history.replaceState(null, '', url);
   setConnection('reconnecting', '接続中…');
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${proto}//${location.host}/api/rooms/${code}/ws?id=${encodeURIComponent(playerId)}&token=${encodeURIComponent(token)}&name=${encodeURIComponent(name)}`;
-  const ws = new WebSocket(wsUrl); socket = ws;
-  ws.onopen = () => { if (currentSession !== sessionId) return; reconnectCount = 0; setConnection('online', 'オンライン'); };
+  const ws = new WebSocket(`${proto}//${location.host}/api/rooms/${code}/ws?id=${encodeURIComponent(playerId)}&token=${encodeURIComponent(token)}&name=${encodeURIComponent(name)}`);
+  socket = ws;
+  ws.onopen = () => { if (currentSession === sessionId) { reconnectCount = 0; setConnection('online', 'オンライン'); } };
   ws.onmessage = event => {
-    if (currentSession !== sessionId) return;
-    if (event.data === 'pong') return;
+    if (currentSession !== sessionId || event.data === 'pong') return;
     let payload; try { payload = JSON.parse(event.data); } catch { return; }
     if (payload.type === 'error') notify(payload.message);
-    if (payload.type === 'state') { state = payload.state; if (leaving && !state.players.some(p => p.id === playerId)) { leaving = false; stopConnection(); notify('退出しました。'); return; } render(); }
+    if (payload.type === 'state') {
+      state = payload.state;
+      if (leaving && !state.players.some(p => p.id === playerId)) { leaving = false; stopConnection(); notify('退出しました。'); return; }
+      render();
+    }
   };
   ws.onclose = () => {
     if (currentSession !== sessionId || intentionalClose) return;
     if (leaving) { stopConnection(); notify('退出しました。'); return; }
-    setConnection('reconnecting', '再接続中…');
-    reconnectCount += 1;
-    if (!state && reconnectCount >= 3) { notify('部屋がない・満員・参加不可の可能性があります。コードを確認してください。'); switchToGate(); return; }
-    const wait = Math.min(12000, 1200 * 2 ** Math.min(4, reconnectCount - 1));
-    reconnectTimer = setTimeout(() => connect(code, name, true), wait);
+    setConnection('reconnecting', '再接続中…'); reconnectCount++;
+    if (!state && reconnectCount >= 3) { notify('部屋がない・満員・参加不可の可能性があります。'); switchToGate(); return; }
+    reconnectTimer = setTimeout(() => connect(code, name, true), Math.min(12000, 1200 * 2 ** Math.min(4,reconnectCount - 1)));
   };
-  ws.onerror = () => { /* onclose handles reconnect */ };
+  ws.onerror = () => {};
 }
 function send(type, extra = {}) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) { notify('接続が切れています。再接続してください。'); return; }
+  if (!socket || socket.readyState !== WebSocket.OPEN) { notify('接続が切れています。'); return; }
   socket.send(JSON.stringify({ type, ...extra }));
 }
 function stopConnection() {
-  leaving = false;
-  ++sessionId;
-  intentionalClose = true;
-  clearTimeout(reconnectTimer);
+  leaving = false; ++sessionId; intentionalClose = true; clearTimeout(reconnectTimer);
   if (socket) { const old = socket; socket = null; old.onclose = null; old.close(); }
-  room = null; const url = new URL(location.href); url.searchParams.delete('room'); history.replaceState(null, '', url);
+  room = null;
+  const url = new URL(location.href); url.searchParams.delete('room'); history.replaceState(null, '', url);
   switchToGate();
 }
 $('createRoom').addEventListener('click', createRoom);
 $('joinRoom').addEventListener('click', joinRoom);
-$('roomCode').addEventListener('keydown', event => { if (event.key === 'Enter') joinRoom(); });
+$('roomCode').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
 $('copyInvite').addEventListener('click', async () => {
   const link = `${location.origin}/?room=${room}`;
   try { await navigator.clipboard.writeText(link); notify('招待リンクをコピーしました！'); }
@@ -116,126 +109,251 @@ $('leaveRoom').addEventListener('click', () => {
   if (state?.status === 'lobby' && socket?.readyState === WebSocket.OPEN) { leaving = true; send('remove', { playerId }); }
   else stopConnection();
 });
-$('game').addEventListener('click', event => {
-  const action = event.target.closest('[data-action]');
-  const emote = event.target.closest('[data-emote]');
-  if (emote) send('emote', { value: emote.dataset.emote });
-  if (!action) return;
-  switch (action.dataset.action) {
+$('game').addEventListener('click', e => {
+  const emote = e.target.closest('[data-emote]'); if (emote) send('emote', { value: emote.dataset.emote });
+  const button = e.target.closest('[data-action]'); if (!button || button.disabled) return;
+  switch(button.dataset.action) {
     case 'start': send('start'); break;
     case 'roll': send('roll'); break;
-    case 'buy': send('buy'); break;
+    case 'step': send('move', { to:Number(button.dataset.to) }); break;
+    case 'buy_many': send('buy_many', { items:[...selectedProperties] }); break;
     case 'skip': send('skip'); break;
-    case 'shop': send('shop', { item: action.dataset.item }); break;
+    case 'shop': send('shop', { item:button.dataset.item }); break;
     case 'skip_offline': send('skip_offline'); break;
     case 'restart': send('restart'); break;
-    case 'remove': send('remove', { playerId: action.dataset.id }); break;
+    case 'remove': send('remove', { playerId:button.dataset.id }); break;
   }
 });
+$('game').addEventListener('change', e => {
+  if (e.target.matches('#roundSelect')) send('rounds', { value:Number(e.target.value) });
+  if (e.target.matches('[data-property]')) {
+    const id = e.target.dataset.property;
+    if (e.target.checked) selectedProperties.add(id); else selectedProperties.delete(id);
+    updatePurchaseSummary();
+  }
+});
+function setZoom(next) {
+  const scroller = $('mapScroll'); const canvas = $('mapCanvas');
+  const mid = (scroller.scrollLeft + scroller.clientWidth / 2) / canvas.scrollWidth;
+  zoom = Math.max(.75, Math.min(1.75, next));
+  canvas.style.width = `${Math.round(1200 * zoom)}px`;
+  scroller.scrollLeft = mid * canvas.scrollWidth - scroller.clientWidth / 2;
+}
+$('mapZoomIn').addEventListener('click', () => setZoom(zoom + .2));
+$('mapZoomOut').addEventListener('click', () => setZoom(zoom - .2));
+$('mapCenter').addEventListener('click', () => focusMap());
+function focusMap() {
+  if (!state) return;
+  const station = state.stations.find(s => s.id === (state.players.find(p => p.id === playerId)?.pos ?? state.players[state.turnIndex]?.pos));
+  if (!station) return;
+  const scroller = $('mapScroll'); const canvas = $('mapCanvas');
+  const scale = canvas.scrollWidth / 1200;
+  scroller.scrollTo({ left:Math.max(0, station.x * scale - scroller.clientWidth / 2), behavior:'smooth' });
+}
 
 function render() {
-  if (!state) return;
-  const s = state;
+  const s = state; if (!s) return;
   const me = s.players.find(p => p.id === playerId);
-  const active = s.players[s.turnIndex];
-  const isHost = s.hostId === playerId;
+  const active = s.players[s.turnIndex]; const isHost = s.hostId === playerId;
   $('roomDisplay').textContent = room;
-  $('roundBadge').textContent = s.status === 'lobby' ? '出発準備中' : s.status === 'finished' ? 'ゲーム終了' : `${s.round} / ${s.rounds}年目`;
+  $('roundBadge').textContent = s.status === 'lobby' ? '出発準備中' : s.status === 'finished' ? '結果発表' : `${s.round}年目 / 全${s.rounds}年`;
   $('destinationName').textContent = s.stations[s.destination]?.name ?? '未定';
   $('playerCount').textContent = `${s.players.length} / 4人`;
-  renderMap(s);
+  $('turnIndicator').textContent = s.status !== 'playing' ? 'RAIL TRIP' : active?.id === playerId ? 'あなたの番！' : `${esc(active?.name)}の番`;
+  renderHud(s, active);
+  renderMap(s, me, active);
   renderActions(s, me, active, isHost);
   renderPlayers(s, active, isHost);
-  renderLogs(s);
+  $('logsList').innerHTML = s.logs.slice(0, 16).map(e => `<div class="log-item log-${esc(e.kind)}">${esc(e.text)}</div>`).join('');
+  if (centeredRoom !== room) { centeredRoom = room; requestAnimationFrame(focusMap); }
+  if (lastMomentSeq === null) lastMomentSeq = s.lastAction?.seq ?? 0;
+  else if (s.lastAction && s.lastAction.seq !== lastMomentSeq) { lastMomentSeq = s.lastAction.seq; showMoment(s.lastAction, s); }
+}
+function renderHud(s, active) {
+  $('playerHud').innerHTML = s.players.map(p => {
+    const delta = previousMoney.has(p.id) ? p.money - previousMoney.get(p.id) : 0;
+    previousMoney.set(p.id, p.money);
+    return `<div class="money-board ${p.id === active?.id && s.status === 'playing' ? 'is-turn' : ''}" style="--player:${p.color}">
+      <div class="money-board-top"><span class="money-player-dot">🚂</span><strong>${esc(p.name)}</strong><small>${p.id === playerId ? 'あなた' : p.online ? '● 接続中' : '○ オフライン'}</small></div>
+      <div class="money-label">持ち金</div><div class="money-number">${money(p.money)}</div>
+      <div class="money-meta"><span>総資産 <b>${money(p.worth)}</b></span><span>物件 <b>${p.propertyCount}件</b></span></div>
+      ${delta ? `<div class="money-pop ${delta > 0 ? 'positive' : 'negative'}">${delta > 0 ? '+' : '−'}${money(Math.abs(delta))}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 function renderActions(s, me, active, isHost) {
   const el = $('actionContent');
   if (!me) { el.innerHTML = '<h2 class="turn-title">観戦モード</h2>'; return; }
   if (s.status === 'lobby') {
     const everyoneOnline = s.players.every(p => p.online);
-    el.innerHTML = `<h2 class="turn-title">🚉 出発までもう少し！</h2><p class="turn-sub">友達に6ケタのコードを送ろう。<br>2〜4人が揃ったらスタート！</p><div class="lobby-code">${esc(room)}</div>${isHost ? `<label for="roundSelect" class="turn-sub">プレイ時間</label><select id="roundSelect" class="select-rounds"><option value="6" ${s.rounds === 6 ? 'selected' : ''}>6年勝負・短め（約10〜15分）</option><option value="10" ${s.rounds === 10 ? 'selected' : ''}>10年勝負・じっくり</option></select><button data-action="start" class="move-btn" ${s.players.length < 2 || !everyoneOnline ? 'disabled' : ''}>🚄 全員で出発する！</button>` : `<p class="turn-sub">ホストの出発を待っています ☕</p>`}<p class="turn-sub">現在 ${s.players.length}人が参加中${everyoneOnline ? '' : '（未接続の人がいます）'}</p>`;
-    $('roundSelect')?.addEventListener('change', event => send('rounds', { value: Number(event.target.value) }));
+    el.innerHTML = `<h2 class="turn-title">🚉 みんなで出発！</h2><p class="turn-sub">部屋コードを友達に送ろう。2人以上でスタート！</p><div class="lobby-code">${esc(room)}</div>${isHost ? `<label for="roundSelect" class="turn-sub">勝負する年数</label><select id="roundSelect" class="select-rounds"><option value="6" ${s.rounds === 6 ? 'selected' : ''}>6年勝負・さくっと</option><option value="10" ${s.rounds === 10 ? 'selected' : ''}>10年勝負・じっくり</option></select><button data-action="start" class="move-btn" ${s.players.length < 2 || !everyoneOnline ? 'disabled' : ''}>🚄 ゲームスタート！</button>` : '<p class="turn-sub">ホストのスタートを待っています ☕</p>'}<p class="turn-sub">参加 ${s.players.length}人 / ${everyoneOnline ? '全員オンライン' : '接続待ちの人がいます'}</p>`;
     return;
   }
   if (s.status === 'finished') {
-    const winner = [...s.players].sort((a, b) => b.worth - a.worth)[0];
-    el.innerHTML = `<h2 class="turn-title">🏆 ${esc(winner.name)}さんの優勝！</h2><p class="turn-sub">最終総資産 <strong class="turn-highlight">${fmt(winner.worth)}万円</strong><br>お疲れさまでした！</p>${isHost ? '<button data-action="restart" class="move-btn">🔁 もう一度遊ぶ</button>' : '<p class="turn-sub">ホストが再戦の準備をするのを待っています。</p>'}`;
-    return;
+    const winner = [...s.players].sort((a,b) => b.worth - a.worth)[0];
+    el.innerHTML = `<h2 class="turn-title">🏆 ${esc(winner.name)}さんが優勝！</h2><p class="turn-sub">最終総資産 <strong class="turn-highlight">${money(winner.worth)}</strong></p>${isHost ? '<button class="move-btn" data-action="restart">🔁 同じメンバーで再戦</button>' : '<p class="turn-sub">ホストの再戦操作を待っています。</p>'}`; return;
   }
   const isMyTurn = active?.id === playerId;
   if (!isMyTurn) {
-    el.innerHTML = `<h2 class="turn-title">${esc(active?.name)}さんの番！</h2><p class="turn-sub">次の一手を待っています。<br>いまは自分の資産をチェックしよう。</p><div class="dice-face">${s.lastRoll ? face(s.lastRoll.die) : '🎲'}</div>${active && !active.online ? '<button data-action="skip_offline" class="outline-btn" style="width:100%">📡 オフラインの人をスキップ</button>' : ''}`;
+    el.innerHTML = `<h2 class="turn-title">🚂 ${esc(active?.name)}さんの番</h2><p class="turn-sub">${s.phase === 'move' ? `あと${s.pending?.remaining}マス、ルートを選択中` : '相手が操作しています。作戦を考えよう！'}</p><div class="dice-face">${s.lastRoll ? face(s.lastRoll.die) : '🎲'}</div>${active && !active.online ? '<button data-action="skip_offline" class="outline-btn wide">📡 オフラインの人をスキップ</button>' : ''}`;
     return;
   }
   if (s.phase === 'roll') {
-    el.innerHTML = `<h2 class="turn-title">✨ あなたの番です！</h2><p class="turn-sub">サイコロを振って次の駅へ。目的地に一番乗りしよう！${me.express ? '<br>🚄 特急きっぷで +2 マス！' : ''}</p><div class="dice-face">🎲</div><button data-action="roll" class="move-btn">🎲 サイコロを振る！</button><p class="turn-sub" style="margin-bottom:0">所持金 ${fmt(me.money)}万円 · 🚄 ${me.express} · 🛡️ ${me.shield}</p>`;
+    el.innerHTML = `<h2 class="turn-title">🎲 ${esc(me.name)}さんの番！</h2><p class="turn-sub">出目の数だけ、好きな線路を進めます。<br>目的地まで最短 <b>${me.goalSteps}マス</b></p><div class="dice-face">🎲</div><button class="move-btn" data-action="roll">サイコロを振る！</button><div class="item-summary">🚄 特急 ${me.express}枚　🛡️ おまもり ${me.shield}個</div>`;
+    return;
+  }
+  if (s.phase === 'move') {
+    const remaining = s.pending.remaining;
+    const options = s.neighbors[me.pos];
+    const hint = s.suggestedRoute?.[1];
+    el.innerHTML = `<h2 class="turn-title">🚂 どっちへ進む？</h2><div class="remaining"><strong>${remaining}</strong><span>マス のこり</span></div><div class="move-progress">${Array.from({ length:s.pending.total }, (_,i) => `<i class="${i < s.pending.total - remaining ? 'done' : ''}"></i>`).join('')}</div><p class="turn-sub">地図上の<strong>黄色く光る駅</strong>をタップ。下のボタンでも移動できます。</p><div class="route-choices">${options.map(i => `<button type="button" class="route-choice ${i === hint ? 'recommended' : ''}" data-action="step" data-to="${i}"><span>🚉 ${esc(s.stations[i].name)}</span><small>${i === hint ? '🎯 最短ルート' : 'この駅へ →'}</small></button>`).join('')}</div><p class="mini-help">移動方向は毎マス変更できます。引き返すことも可能です。</p>`;
     return;
   }
   const pending = s.pending;
   if (pending?.type === 'city') {
-    const station = s.stations[pending.index];
-    el.innerHTML = `<h2 class="turn-title">🏠 物件を買いますか？</h2><p class="turn-sub">${esc(station.name)}に到着しました！ 物件を買うと年末に10%の収益が入ります。</p><div class="choice-card"><strong>📍 ${esc(station.name)}エリア</strong><small>購入価格 ${fmt(station.price)}万円 / 年間収益 ${fmt(Math.round(station.price * .1))}万円</small></div><div class="action-buttons"><button data-action="buy" class="move-btn">💰 ${fmt(station.price)}万円で購入</button><button data-action="skip" class="outline-btn">今回は見送る</button></div>`;
-  } else if (pending?.type === 'shop') {
-    const shop = s.shopItems;
-    el.innerHTML = `<h2 class="turn-title">🛒 駅のショップ</h2><p class="turn-sub">旅に役立つアイテムを買おう！<br>所持金 ${fmt(me.money)}万円</p><div class="shop-row"><button class="shop-btn" data-action="shop" data-item="express" ${me.money < shop.express.price || me.express >= 3 ? 'disabled' : ''}>🚄 特急きっぷ<small>次のサイコロ +2<br>${fmt(shop.express.price)}万円</small></button><button class="shop-btn" data-action="shop" data-item="shield" ${me.money < shop.shield.price || me.shield >= 3 ? 'disabled' : ''}>🛡️ おまもり<small>次の損失イベント無効<br>${fmt(shop.shield.price)}万円</small></button></div><button data-action="skip" class="outline-btn" style="width:100%">何も買わない</button>`;
+    renderPropertyShop(s, me, pending.index, el); return;
   }
+  if (pending?.type === 'shop') {
+    el.innerHTML = `<h2 class="turn-title">🎁 カードショップ</h2><p class="turn-sub">所持金 <b>${money(me.money)}</b><br>使えるアイテムを選ぼう（各3枚まで）</p><div class="shop-row">${Object.entries(s.shopItems).map(([id,item]) => `<button class="shop-btn" data-action="shop" data-item="${id}" ${me.money < item.price || me[id] >= 3 ? 'disabled' : ''}>${item.icon} ${esc(item.name)}<small>${esc(item.description)}<br><b>${money(item.price)}</b> ／ 所持 ${me[id]}</small></button>`).join('')}</div><button class="outline-btn wide" data-action="skip">何も買わずに終了</button>`;
+  }
+}
+function renderPropertyShop(s, me, index, el) {
+  const station = s.stations[index];
+  const key = `${s.round}:${s.turnIndex}:${index}:${s.lastRoll?.at}`;
+  if (key !== purchaseKey) { selectedProperties.clear(); purchaseKey = key; }
+  // The choice board supports multiple selections, just like a shopping basket.
+  const rows = station.properties.map(p => {
+    const owner = s.players.find(x => x.id === s.owners[p.id]);
+    const unavailable = Boolean(owner) || p.price > me.money;
+    return `<label class="property-row ${owner ? 'sold' : ''} ${unavailable ? 'unavailable' : ''}"><input type="checkbox" data-property="${p.id}" ${selectedProperties.has(p.id) ? 'checked' : ''} ${unavailable ? 'disabled' : ''}><span class="property-name"><b>${esc(p.name)}</b><small>${owner ? `🚩 ${esc(owner.name)}の物件` : '購入できます'}</small></span><span class="property-rate">${p.yieldRate}%<small>収益率</small></span><strong class="property-price">${money(p.price)}</strong></label>`;
+  }).join('');
+  const owned = station.properties.filter(p => s.owners[p.id] === me.id).length;
+  el.innerHTML = `<div class="property-header"><div class="property-kicker">🏙️ 物件駅</div><h2>${esc(station.name)}</h2><p>買いたい物件を選択してください</p></div><div class="property-table-head"><span>物件名</span><span>利益</span><span>価格</span></div><div class="property-list">${rows}</div><div class="monopoly-hint">🏅 全物件をそろえると、この駅の年間収益が<span>2倍</span>！ ${owned ? `（現在${owned}件所有）` : ''}</div><div class="purchase-summary"><span>購入額の合計</span><b id="purchaseTotal">0万円</b></div><div class="purchase-after" id="purchaseAfter">購入後の持ち金 ${money(me.money)}</div><button class="move-btn" data-action="buy_many" id="purchaseButton" disabled>物件を選んでください</button><button class="outline-btn wide" data-action="skip">購入を終える / 見送る</button>`;
+  updatePurchaseSummary();
+}
+function updatePurchaseSummary() {
+  if (state?.pending?.type !== 'city') return;
+  const me = state.players.find(p => p.id === playerId); if (!me) return;
+  const st = state.stations[state.pending.index];
+  let total = 0;
+  for (const id of [...selectedProperties]) {
+    const p = st.properties.find(p => p.id === id);
+    if (!p || state.owners[id]) selectedProperties.delete(id);
+    else total += p.price;
+  }
+  const enough = total <= me.money;
+  $('purchaseTotal').textContent = money(total);
+  $('purchaseTotal').classList.toggle('over-budget', !enough);
+  $('purchaseAfter').textContent = enough ? `購入後の持ち金 ${money(me.money - total)}` : `持ち金が ${money(total - me.money)} 足りません`;
+  $('purchaseButton').disabled = !selectedProperties.size || !enough;
+  $('purchaseButton').textContent = !selectedProperties.size ? '物件を選んでください' : enough ? `${selectedProperties.size}件をまとめて購入する` : '所持金が足りません';
 }
 function renderPlayers(s, active, isHost) {
-  const ranking = [...s.players].sort((a, b) => b.worth - a.worth);
-  $('playersList').innerHTML = ranking.map((p, i) => `<div class="player-line ${p.id === active?.id && s.status === 'playing' ? 'active' : ''}"><div class="player-rank">${i + 1}</div><div class="player-avatar" style="background:${p.color}">${esc(p.name.slice(0, 1))}</div><div class="player-text"><div class="player-name">${esc(p.name)}${p.id === playerId ? ' (自分)' : ''}${p.id === s.hostId ? ' 👑' : ''}</div><div class="player-details"><span class="${p.online ? 'online-icon' : 'offline-icon'}">●</span> ${esc(s.stations[p.pos]?.name)} · 物件 ${p.propertyCount}件 · 現金 ${fmt(p.money)}万</div></div><div class="player-money">${fmt(p.worth)}<small>万</small></div>${isHost && s.status === 'lobby' && !p.online && p.id !== playerId ? `<button data-action="remove" data-id="${esc(p.id)}" class="outline-btn" title="未接続のプレイヤーを削除">×</button>` : ''}</div>`).join('');
+  const ranking = [...s.players].sort((a,b) => b.worth - a.worth);
+  $('playersList').innerHTML = ranking.map((p,i) => `<div class="player-line ${p.id === active?.id && s.status === 'playing' ? 'active' : ''}"><div class="player-rank">${i+1}</div><div class="player-avatar" style="background:${p.color}">${esc(p.name.slice(0,1))}</div><div class="player-text"><div class="player-name">${esc(p.name)}${p.id === playerId ? '（自分）' : ''}${p.id === s.hostId ? ' 👑' : ''}</div><div class="player-details"><span class="${p.online ? 'online-icon' : 'offline-icon'}">●</span> ${esc(s.stations[p.pos]?.name)} ・ 年収${money(p.income)}</div></div><div class="player-money">${money(p.worth)}</div>${isHost && s.status === 'lobby' && !p.online && p.id !== playerId ? `<button data-action="remove" data-id="${esc(p.id)}" class="outline-btn" aria-label="削除">×</button>` : ''}</div>`).join('');
 }
-function renderLogs(s) { $('logsList').innerHTML = s.logs.slice(0, 17).map(e => `<div class="log-item">${esc(e.text)}</div>`).join(''); }
-function renderMap(s) {
-  const svg = $('railMap');
-  svg.replaceChildren();
-  // Draw simple infographic geography, avoiding external images and reducing cellular data usage.
+function showMoment(a, s) {
+  const el = $('gameMoment');
+  let title = '', subtitle = '', symbol = '';
+  if (a.type === 'roll') { title = `サイコロは ${a.die}！`; subtitle = a.boost ? `特急きっぷで +${a.boost} マス！` : '進む道を選ぼう！'; symbol = face(a.die); }
+  else if (a.type === 'goal') { title = '目的地に到着！'; subtitle = `🎉 ${a.station}　+${money(a.money)}`; symbol = '🏆'; }
+  else if (a.type === 'event') { title = a.money < 0 ? 'ハプニング！' : 'イベント発生！'; subtitle = `${a.message} ${a.money ? `${a.money > 0 ? '+' : ''}${money(a.money)}` : ''}`; symbol = a.money < 0 ? '💦' : '🎁'; }
+  else if (a.type === 'buy') { title = 'お買い上げ！'; subtitle = `${a.station}　${money(a.money)}`; symbol = '🏠'; }
+  else return;
+  el.innerHTML = `<div class="moment-sheet"><span class="moment-symbol">${symbol}</span><div class="moment-title">${esc(title)}</div><div class="moment-sub">${esc(subtitle)}</div></div>`;
+  el.classList.remove('visible'); void el.offsetWidth; el.classList.add('visible');
+  clearTimeout(momentTimer); momentTimer = setTimeout(() => el.classList.remove('visible'), a.type === 'roll' ? 1050 : 1750);
+}
+function renderMap(s, me, active) {
+  const svg = $('railMap'); svg.replaceChildren();
   const defs = S('defs');
-  const gradient = S('linearGradient', { id: 'seaTint', x1: '0', x2: '1', y1: '0', y2: '1' });
-  gradient.append(S('stop', { offset: '0%', 'stop-color': '#f6faff' }), S('stop', { offset: '100%', 'stop-color': '#e7effa' }));
-  defs.append(gradient); svg.append(defs);
-  svg.append(S('rect', { x: 0, y: 0, width: 1000, height: 720, fill: 'url(#seaTint)' }));
-  const bg = S('g', { opacity: '.55' });
-  for (let x = 40; x < 1000; x += 60) bg.append(S('line', { x1: x, x2: x, y1: 0, y2: 720, stroke: '#c7d8ea', 'stroke-width': 1, 'stroke-dasharray': '2 12' }));
-  for (let y = 30; y < 720; y += 60) bg.append(S('line', { x1: 0, x2: 1000, y1: y, y2: y, stroke: '#c7d8ea', 'stroke-width': 1, 'stroke-dasharray': '2 12' }));
-  svg.append(bg);
-  svg.append(S('text', { x: 460, y: 530, class: 'map-watermark', 'text-anchor': 'middle' }, 'JAPAN'));
-  for (const [x, y, label] of [[85, 88, 'KYUSHU'], [340, 195, 'SHIKOKU'], [450, 475, 'HONSHU'], [833, 82, 'HOKKAIDO']]) svg.append(S('text', { x, y, class: 'map-area-name' }, label));
-  const coordinates = s.stations.map(st => [st.x * 10, st.y * 7.2]);
-  const trackPoints = [...coordinates, coordinates[0]].map(p => p.join(',')).join(' ');
-  for (const cls of ['track-shadow', 'track-line', 'track-rail']) svg.append(S('polyline', { points: trackPoints, class: cls }));
-  s.stations.forEach((st, i) => {
-    const [x, y] = coordinates[i];
-    const isGoal = i === s.destination;
-    const color = st.type === 'city' ? '#4d94e6' : st.type === 'event' ? '#f5b64b' : '#9d78e1';
-    const owner = s.players.find(p => p.id === s.owners[i]);
-    const grp = S('g', { class: `station-marker${isGoal ? ' current-destination' : ''}`, role: 'button', tabindex: 0, 'aria-label': `${st.name}${st.price ? ' 物件' : ''}` });
-    if (isGoal) grp.append(S('circle', { cx: x, cy: y, r: 25, class: 'goal-pulse' }));
-    grp.append(S('circle', { cx: x, cy: y, r: 16, fill: owner?.color || color, class: 'station-outer' }));
-    if (st.type === 'event') grp.append(S('text', { x, y: y + 6, 'font-size': 15, fill: '#fff', 'text-anchor': 'middle', 'font-weight': 900, 'pointer-events': 'none' }, '!'));
-    if (st.type === 'shop') grp.append(S('text', { x, y: y + 5, 'font-size': 14, fill: '#fff', 'text-anchor': 'middle', 'pointer-events': 'none' }, '★'));
-    const above = y > 250 && (i % 3 !== 0 || y > 400);
-    grp.append(S('text', { x, y: y + (above ? -27 : 37), class: 'station-label' }, `${isGoal ? '🎯 ' : ''}${st.name}`));
-    grp.addEventListener('click', () => selectStation(s, i));
-    grp.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectStation(s, i); } });
-    svg.append(grp);
-  });
-  for (const [i, p] of s.players.entries()) {
-    const [x, y] = coordinates[p.pos];
-    const occupants = s.players.slice(0, i).filter(t => t.pos === p.pos).length;
-    const group = S('g', { class: `token${p.id === playerId ? ' me' : ''}`, transform: `translate(${x + 19 + (occupants % 2) * 29},${y - 19 - Math.floor(occupants / 2) * 29})` });
-    group.append(S('circle', { cx: 0, cy: 0, r: 18, fill: p.color }));
-    group.append(S('text', { x: 0, y: 1 }, p.name.slice(0, 1)));
+  const sea = S('linearGradient', { id:'seaTint', x1:'0',y1:'0',x2:'1',y2:'1' });
+  sea.append(S('stop',{offset:'0%','stop-color':'#cceaf3'}),S('stop',{offset:'100%','stop-color':'#8dc7df'}));
+  const land = S('linearGradient', { id:'landTint', x1:'0',y1:'0',x2:'1',y2:'1' });
+  land.append(S('stop',{offset:'0%','stop-color':'#ebf4dd'}),S('stop',{offset:'100%','stop-color':'#bcd99e'}));
+  defs.append(sea,land); svg.append(defs);
+  svg.append(S('rect',{x:0,y:0,width:1200,height:850,fill:'url(#seaTint)'}));
+  const grid = S('g',{opacity:'.16'});
+  for(let x=0;x<=1200;x+=50)grid.append(S('path',{d:`M${x} 0V850`,stroke:'#fff','stroke-width':1}));
+  for(let y=0;y<=850;y+=50)grid.append(S('path',{d:`M0 ${y}H1200`,stroke:'#fff','stroke-width':1}));
+  svg.append(grid);
+  // Decorative simplified land contours: original schematic, not a geographic survey map.
+  const islands = [
+    'M 76,814 L 33,776 L 30,695 L 75,642 L 149,630 L 209,659 L 224,719 L 197,820 Z',
+    'M 155,609 L 226,577 L 327,599 L 416,623 L 481,643 L 523,605 L 570,612 L 635,621 L 681,646 L 738,622 L 785,639 L 836,669 L 915,649 L 954,608 L 958,561 L 941,523 L 956,449 L 938,414 L 944,369 L 914,343 L 931,274 L 897,268 L 854,283 L 815,324 L 813,392 L 761,433 L 728,479 L 651,480 L 611,505 L 568,559 L 494,572 L 419,584 L 338,576 L 252,576 L 182,589 Z',
+    'M 270,798 L 257,758 L 295,724 L 379,712 L 426,748 L 409,811 L 319,824 Z',
+    'M 979,216 L 978,181 L 1019,147 L 1011,92 L 1051,53 L 1115,80 L 1160,108 L 1139,162 L 1094,199 L 1040,217 Z',
+  ];
+  for(const d of islands)svg.append(S('path',{d,fill:'url(#landTint)',stroke:'#9aba86','stroke-width':3,'stroke-linejoin':'round',opacity:'.84'}));
+  for (const [x,y,r] of [[1090,250,17],[704,572,17],[536,536,20],[842,349,17],[159,769,13],[469,746,15]]) {
+    svg.append(S('circle',{cx:x,cy:y,r,fill:'#fff',opacity:'.16'}));
+    svg.append(S('text',{x,y:y+5,'text-anchor':'middle',class:'map-decoration'},'✿'));
+  }
+  for (const [x,y,name] of [[1025,273,'北海道'],[854,345,'東北'],[966,715,'関東'],[690,578,'中部'],[473,586,'近畿'],[242,562,'中国'],[320,830,'四国'],[75,605,'九州']])
+    svg.append(S('text',{x,y,class:'map-area-name','text-anchor':'middle'},name));
+  // Rails: shadow, ties, and animated main line, each edge rendered once.
+  const rails = S('g',{class:'rail-layer'});
+  for (const [a,b] of s.links) {
+    const start=s.stations[a],end=s.stations[b];
+    const d=`M${start.x} ${start.y} L${end.x} ${end.y}`;
+    rails.append(S('path',{d,class:'rail-shadow'}));
+    rails.append(S('path',{d,class:'rail-base'}));
+    rails.append(S('path',{d,class:'rail-ties'}));
+  }
+  svg.append(rails);
+  if (s.status==='playing' && s.suggestedRoute?.length>1) {
+    const pts=s.suggestedRoute.map(i=>`${s.stations[i].x},${s.stations[i].y}`).join(' ');
+    svg.append(S('polyline',{points:pts,class:'suggested-track'}));
+  }
+  const canMove = s.phase==='move' && active?.id===playerId;
+  const accessible = new Set(canMove ? s.neighbors[me.pos] : []);
+  for (const station of s.stations) {
+    const {x,y,id,name,type}=station;
+    const isGoal=id===s.destination, reachable=accessible.has(id);
+    const owned=station.properties.filter(p=>s.owners[p.id]);
+    const owners=[...new Set(owned.map(p=>s.owners[p.id]))];
+    const isFullyOwned=station.properties.length>0 && owned.length===station.properties.length;
+    const owner=owners.length===1 ? s.players.find(p=>p.id===owners[0]) : null;
+    const group=S('g',{class:`station-marker ${type} ${isGoal?'is-goal':''} ${reachable?'reachable':''}`,tabindex:0,role:'button','aria-label':`${name}${reachable?'、ここへ移動可能':''}`});
+    if(isGoal)group.append(S('circle',{cx:x,cy:y,r:28,class:'goal-pulse'}));
+    if(reachable)group.append(S('circle',{cx:x,cy:y,r:27,class:'reach-ring'}));
+    group.append(S('circle',{cx:x,cy:y,r:17,fill:owner?.color || (type==='city'?'#3979c5':type==='event'?'#ef745c':'#9a6bd1'),class:'station-outer'}));
+    group.append(S('circle',{cx:x,cy:y,r:9,fill:'#fff',opacity:'.95'}));
+    group.append(S('text',{x,y:y+5,class:'station-symbol'},type==='city'?'¥':type==='event'?'!':'★'));
+    const yOffset= [0,2,4,6,8,11,13,15,17,19,21,23,25,27,29,31,33,35].includes(id)?-29:42;
+    const label=S('text',{x,y:y+yOffset,class:`station-label ${reachable?'can-go':''}`,'text-anchor':'middle'},name);
+    group.append(label);
+    if(isGoal)group.append(S('text',{x,y:y-43,class:'goal-flag','text-anchor':'middle'},'🚩'));
+    if(isFullyOwned && owner)group.append(S('text',{x:x+18,y:y-11,class:'owner-flag','text-anchor':'middle'},'★'));
+    group.addEventListener('click',()=>{ if(reachable) send('move',{to:id}); else selectStation(s,id); });
+    group.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); if(reachable)send('move',{to:id}); else selectStation(s,id);} });
     svg.append(group);
   }
-  if (selectedStation != null) selectStation(s, selectedStation);
+  s.players.forEach((p,i)=>{
+    const station=s.stations[p.pos];
+    const others=s.players.slice(0,i).filter(o=>o.pos===p.pos).length;
+    const x=station.x+23+(others%2)*38,y=station.y-23-Math.floor(others/2)*37;
+    const group=S('g',{class:`token ${p.id===playerId?'me':''}`,transform:`translate(${x},${y})`});
+    group.append(S('rect',{x:-21,y:-20,width:42,height:39,rx:13,fill:p.color,class:'train-token'}));
+    group.append(S('text',{x:0,y:4,'text-anchor':'middle',class:'train-symbol'},'🚂'));
+    group.append(S('text',{x:0,y:31,'text-anchor':'middle',class:'token-name'},p.name.slice(0,4)));
+    svg.append(group);
+    const prev=previousPositions.get(p.id);
+    if(prev!=null && prev!==p.pos && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const start=s.stations[prev];
+      if(start)group.animate([{transform:`translate(${start.x+23+(others%2)*38}px, ${start.y-23-Math.floor(others/2)*37}px) scale(.92)`},{transform:`translate(${x}px, ${y}px) scale(1.13)`,offset:.65},{transform:`translate(${x}px, ${y}px) scale(1)`}],{duration:550,easing:'cubic-bezier(.2,.85,.2,1)'});
+    }
+    previousPositions.set(p.id,p.pos);
+  });
+  if (selectedStation != null) selectStation(s,selectedStation);
+  const current=s.stations[active?.pos];
+  $('mapNotice').textContent = canMove ? `🚂 残り${s.pending.remaining}マス｜黄色い駅を選んで進もう！` : `📍 現在の手番：${active ? `${active.name}（${current.name}）` : '出発待ち'}　|　駅を押すと物件を確認できます`;
+  $('mapNotice').classList.toggle('guiding',canMove);
 }
-function selectStation(s, index) {
-  selectedStation = index;
-  const st = s.stations[index];
-  if (!st) return;
-  const owner = s.players.find(p => p.id === s.owners[index]);
-  $('stationInfo').textContent = `${st.name} · ${st.type === 'city' ? `${fmt(st.price)}万円${owner ? `（${owner.name}の物件）` : '（購入可能）'}` : st.type === 'event' ? 'イベントマス 🎁' : 'アイテムショップ 🛒'}`;
+function selectStation(s,index) {
+  selectedStation=index; const station=s.stations[index]; if(!station)return;
+  const available=station.properties.filter(p=>!s.owners[p.id]);
+  const summary=station.type==='city'?`物件 ${station.properties.length}件（購入可 ${available.length}件）｜${station.properties.slice(0,2).map(p=>p.name).join('・')}`:station.type==='event'?'イベントマス：臨時収入や出費が発生':'カードショップ：旅を助けるアイテムが買えます';
+  $('stationInfo').textContent=`${station.name}｜${summary}`;
 }
-
-// Opening an invite link can reconnect to a previously joined room on the same device.
-if ($('roomCode').value && savedName) { ensureIdentity(); connect($('roomCode').value, savedName); }
+if ($('roomCode').value && savedName) { ensureIdentity(); connect($('roomCode').value,savedName); }
