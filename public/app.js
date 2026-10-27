@@ -81,6 +81,7 @@ function connect(code, name, isRetry = false) {
   };
   ws.onclose = () => {
     if (currentSession !== sessionId || intentionalClose) return;
+    if (leaving) { stopConnection(); notify('退出しました。'); return; }
     setConnection('reconnecting', '再接続中…');
     reconnectCount += 1;
     if (!state && reconnectCount >= 3) { notify('部屋がない・満員・参加不可の可能性があります。コードを確認してください。'); switchToGate(); return; }
